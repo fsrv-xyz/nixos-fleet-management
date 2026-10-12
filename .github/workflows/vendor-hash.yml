@@ -1,0 +1,37 @@
+name: vendorHash
+
+on:
+  pull_request:
+    paths:
+      - "**.go"
+      - go.mod
+      - go.sum
+      - nix/package.nix
+
+permissions:
+  contents: write
+
+jobs:
+  vendor-hash:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - run: nix/update-vendor-hash.sh
+      # Commits for branches of this repository, such as Renovate's; fork PRs only fail.
+      - env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          git diff --quiet && exit 0
+          git diff
+          if [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then
+            echo "::error file=nix/package.nix::vendorHash is stale, run nix/update-vendor-hash.sh"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "fix(nix): update vendorHash"
+          git push

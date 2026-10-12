@@ -1,0 +1,81 @@
+:root {
+  color-scheme: light dark;
+  --fg: #1d1f21;
+  --bg: #fafafa;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --error: #b91c1c;
+  --ok: #15803d;
+  --warn: #b45309;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e5e7eb;
+    --bg: #111315;
+    --muted: #9ca3af;
+    --line: #2a2d31;
+    --error: #f87171;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+  }
+}
+
+body {
+  margin: 0;
+  font: 15px/1.5 system-ui, sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+main {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 24px 16px;
+}
+
+h1 {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+fleet-agents .count {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+fleet-agents .error {
+  color: var(--error);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th, td {
+  text-align: left;
+  padding: 8px 12px 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+th {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+td:first-child {
+  font-family: ui-monospace, monospace;
+}
+
+td.ok {
+  color: var(--ok);
+}
+
+td.warn {
+  color: var(--warn);
+}
+
+td.fail {
+  color: var(--error);
+}

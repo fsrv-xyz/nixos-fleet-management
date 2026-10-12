@@ -1,0 +1,8 @@
+*.crt
+*.key
+*.csr
+/.etcd/
+/result
+/agent.json
+/.direnv/
+/.idea/

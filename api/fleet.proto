@@ -1,0 +1,96 @@
+syntax = "proto3";
+
+package fleet.v1;
+
+option go_package = "nixos-fleet-management/api";
+
+import "google/protobuf/any.proto";
+
+service Fleet {
+  rpc Connect(stream AgentMessage) returns (stream ServerMessage);
+  // Reissues the caller's client certificate for the same name and key.
+  rpc RenewCertificate(RenewCertificateRequest) returns (CertificateResponse);
+}
+
+message AgentMessage {
+  oneof body {
+    Heartbeat heartbeat = 1;
+    Facts facts = 2;
+    DeployProgress deploy_progress = 3;
+  }
+}
+
+message Heartbeat {
+  uint64 seq = 1;
+}
+
+// Sent after connecting; each fact is a message such as Platform.
+message Facts {
+  repeated google.protobuf.Any facts = 1;
+}
+
+message Platform {
+  string goos = 1;
+  string goarch = 2;
+}
+
+message Uname {
+  string sysname = 1;
+  string nodename = 2;
+  string release = 3;
+  string version = 4;
+  string machine = 5;
+}
+
+// The running system: number is the generation in /nix/var/nix/profiles whose
+// target is store_path, 0 if no generation points to it. booted_store_path differs
+// from store_path while a reboot is pending, profile_store_path after a
+// configuration that only becomes active on the next boot.
+message NixOSGeneration {
+  uint32 number = 1;
+  string store_path = 2;
+  string nixos_version = 3;
+  string booted_store_path = 4;
+  string profile_store_path = 5;
+}
+
+message DeployProgress {
+  enum Phase {
+    PHASE_UNSPECIFIED = 0;
+    PHASE_REALISING = 1;
+    PHASE_ACTIVATING = 2;
+    PHASE_DONE = 3;
+    PHASE_FAILED = 4;
+  }
+  string store_path = 1;
+  Phase phase = 2;
+  // The latest output line, or the error once failed.
+  string message = 3;
+}
+
+message ServerMessage {
+  oneof body {
+    uint64 ack = 1;
+    Deploy deploy = 2;
+  }
+}
+
+// Asks the agent to switch to store_path; sent on connect and whenever it changes.
+message Deploy {
+  string store_path = 1;
+}
+
+message RenewCertificateRequest {}
+
+service CertificateAuthority {
+  rpc RequestCertificate(CertificateRequest) returns (CertificateResponse);
+}
+
+message CertificateRequest {
+  bytes csr = 1;
+}
+
+// certificate stays empty while the request awaits signing.
+message CertificateResponse {
+  bytes certificate = 1;
+}
