@@ -3,6 +3,7 @@ package fleet
 import (
 	"context"
 	"crypto"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
@@ -14,6 +15,7 @@ import (
 	"io"
 	"log"
 	"math/big"
+	"net"
 	"regexp"
 	"strings"
 	"time"
@@ -167,23 +169,64 @@ func absent(key string) clientv3.Cmp {
 }
 
 func (c *CA) issue(name string, pub crypto.PublicKey) ([]byte, error) {
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return nil, err
-	}
 	now := time.Now()
-	der, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
-		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: name},
-		NotBefore:    now,
-		NotAfter:     now.Add(agentCertValidity),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-	}, c.cert, pub, c.key)
+	der, err := c.sign(&x509.Certificate{
+		Subject:     pkix.Name{CommonName: name},
+		NotBefore:   now,
+		NotAfter:    now.Add(agentCertValidity),
+		KeyUsage:    x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}, pub)
 	if err != nil {
 		return nil, err
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), nil
+}
+
+// issueServerCertificate creates a key that never leaves memory and a certificate
+// for it valid as a TLS server under names, which are DNS names or IP addresses.
+func (c *CA) issueServerCertificate(names []string, validity time.Duration) (*tls.Certificate, error) {
+	if len(names) == 0 {
+		return nil, errors.New("no server names")
+	}
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	template := &x509.Certificate{
+		Subject: pkix.Name{CommonName: names[0]},
+		// Agents whose clock runs behind would reject a certificate issued at server start.
+		NotBefore:   now.Add(-time.Hour),
+		NotAfter:    now.Add(validity),
+		KeyUsage:    x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	for _, name := range names {
+		if ip := net.ParseIP(name); ip != nil {
+			template.IPAddresses = append(template.IPAddresses, ip)
+		} else {
+			template.DNSNames = append(template.DNSNames, name)
+		}
+	}
+	der, err := c.sign(template, public)
+	if err != nil {
+		return nil, err
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, err
+	}
+	return &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: private, Leaf: leaf}, nil
+}
+
+func (c *CA) sign(template *x509.Certificate, pub crypto.PublicKey) ([]byte, error) {
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, err
+	}
+	template.SerialNumber = serial
+	return x509.CreateCertificate(rand.Reader, template, c.cert, pub, c.key)
 }
 
 func Fingerprint(der []byte) string {

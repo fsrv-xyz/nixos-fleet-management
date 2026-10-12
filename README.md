@@ -21,8 +21,7 @@ services.fleet-server = {
   etcdEndpoints = [ "10.0.0.1:2379" "10.0.0.2:2379" "10.0.0.3:2379" ];
   caCertificate = ./fleet-ca.crt;
   caKeyFile = "/run/secrets/fleet-ca-key";
-  certificate = ./fleet1.crt;
-  keyFile = "/run/secrets/fleet1-key";
+  serverNames = [ "fleet1.example.org" ];
 };
 ```
 
@@ -38,9 +37,11 @@ services.fleet-agent = {
 };
 ```
 
-Key files are read through systemd credentials and never copied to the store,
-and only at start: restart `fleet-server.service` after rotating them, e.g. with
-sops-nix `restartUnits`.
+The CA key is the only secret. It is read through systemd credentials, never
+copied to the store, and only at start: restart `fleet-server.service` after
+rotating it, e.g. with sops-nix `restartUnits`. Each server issues itself a
+certificate for `serverNames` from the CA at start, with a key that stays in
+memory, and replaces it before it expires.
 The web frontend listens on `127.0.0.1:8080` without authentication.
 
 ## Operation

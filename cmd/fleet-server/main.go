@@ -35,8 +35,9 @@ type config struct {
 	HTTPListen string   `json:"httpListen"`
 	CACert     string   `json:"caCert"`
 	CAKey      string   `json:"caKey"`
-	Cert       string   `json:"cert"`
-	Key        string   `json:"key"`
+	// ServerNames are the DNS names and IP addresses agents reach this server by;
+	// its certificate, issued at start, is valid for these.
+	ServerNames []string `json:"serverNames"`
 }
 
 func main() {
@@ -51,15 +52,14 @@ func main() {
 	flag.Parse()
 
 	cfg := config{
-		Etcd:       []string{"127.0.0.1:2379"},
-		EtcdPrefix: "/fleet",
-		Listen:     ":8443",
-		CAListen:   ":8444",
-		HTTPListen: ":8080",
-		CACert:     "ca/ca.crt",
-		CAKey:      "ca/ca.key",
-		Cert:       "ca/server.crt",
-		Key:        "ca/server.key",
+		Etcd:        []string{"127.0.0.1:2379"},
+		EtcdPrefix:  "/fleet",
+		Listen:      ":8443",
+		CAListen:    ":8444",
+		HTTPListen:  ":8080",
+		CACert:      "ca/ca.crt",
+		CAKey:       "ca/ca.key",
+		ServerNames: []string{"localhost", "127.0.0.1", "::1"},
 	}
 	if err := fleet.LoadConfig(*path, &cfg); err != nil {
 		log.Fatal(err)
@@ -95,18 +95,16 @@ func serve(cfg config) {
 	// Close revokes the lease, so this server's agents vanish at once instead of after the TTL.
 	defer session.Close()
 
-	creds, err := fleet.ServerCredentials(cfg.CACert, cfg.Cert, cfg.Key)
-	if err != nil {
-		log.Fatal(err)
-	}
-	caCreds, err := fleet.CAServerCredentials(cfg.Cert, cfg.Key)
-	if err != nil {
-		log.Fatal(err)
-	}
 	ca, err := fleet.LoadCA(cfg.CACert, cfg.CAKey, etcd)
 	if err != nil {
 		log.Fatal(err)
 	}
+	serverCert, err := fleet.NewServerCertificate(ca, cfg.ServerNames)
+	if err != nil {
+		log.Fatal(err)
+	}
+	creds := fleet.ServerCredentials(ca, serverCert)
+	caCreds := fleet.CAServerCredentials(serverCert)
 
 	lis, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
@@ -137,6 +135,7 @@ func serve(cfg config) {
 		httpSrv.Close()
 	}()
 	go fleetServer.WatchAgents(ctx)
+	go serverCert.Run(ctx)
 	go func() {
 		log.Printf("web frontend on %s", httpSrv.Addr)
 		if err := httpSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
