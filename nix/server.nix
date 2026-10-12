@@ -16,14 +16,13 @@ let
     caListen = ":${toString cfg.caPort}";
     httpListen = cfg.httpListen;
     caCert = "${cfg.caCertificate}";
-    cert = "${cfg.certificate}";
+    inherit (cfg) serverNames;
   };
   configFile = pkgs.writeText "fleet-server.json" (
     builtins.toJSON (
       settings
       // {
         caKey = "${credentials}/ca.key";
-        key = "${credentials}/server.key";
       }
     )
   );
@@ -33,7 +32,6 @@ let
       settings
       // {
         caKey = cfg.caKeyFile;
-        key = cfg.keyFile;
       }
     )
   );
@@ -102,15 +100,15 @@ in
       description = "CA key, read through systemd credentials, never copied to the store.";
     };
 
-    certificate = lib.mkOption {
-      type = lib.types.path;
-      description = "Server certificate, with every name agents use to reach this server.";
-    };
-
-    keyFile = lib.mkOption {
-      type = lib.types.externalPath;
-      example = "/run/secrets/fleet-server-key";
-      description = "Server key, read through systemd credentials, never copied to the store.";
+    serverNames = lib.mkOption {
+      type = lib.types.nonEmptyListOf lib.types.str;
+      default = [ config.networking.fqdnOrHostName ];
+      defaultText = lib.literalExpression "[ config.networking.fqdnOrHostName ]";
+      example = [ "fleet1.example.org" "10.0.0.1" ];
+      description = ''
+        DNS names and IP addresses agents reach this server by. The server issues
+        itself a certificate for them from the CA at start, with a key kept in memory.
+      '';
     };
   };
 
@@ -132,10 +130,7 @@ in
       after = [ "network-online.target" ];
       serviceConfig = {
         ExecStart = "${fleetServer} -config ${configFile}";
-        LoadCredential = [
-          "ca.key:${cfg.caKeyFile}"
-          "server.key:${cfg.keyFile}"
-        ];
+        LoadCredential = [ "ca.key:${cfg.caKeyFile}" ];
         DynamicUser = true;
         # Exits when it loses its etcd session; agents reconnect to the restarted server.
         Restart = "always";

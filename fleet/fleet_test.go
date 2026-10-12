@@ -50,15 +50,16 @@ func (s *notifyingServer) Connect(stream grpc.BidiStreamingServer[api.AgentMessa
 func TestAgentRenewsAndFailsOver(t *testing.T) {
 	dir := t.TempDir()
 	writePKI(t, dir)
-	serverCreds, err := ServerCredentials(filepath.Join(dir, "ca.crt"), filepath.Join(dir, "server.crt"), filepath.Join(dir, "server.key"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	etcd := startEtcd(t)
 	ca, err := LoadCA(filepath.Join(dir, "ca.crt"), filepath.Join(dir, "ca.key"), etcd)
 	if err != nil {
 		t.Fatal(err)
 	}
+	serverCert, err := NewServerCertificate(ca, []string{"127.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverCreds := ServerCredentials(ca, serverCert)
 	certFile := filepath.Join(dir, "agent.crt")
 	agentCert, err := os.ReadFile(certFile)
 	if err != nil {
@@ -341,10 +342,11 @@ func TestCertificateSigning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	creds, err := CAServerCredentials(filepath.Join(dir, "server.crt"), filepath.Join(dir, "server.key"))
+	serverCert, err := NewServerCertificate(ca, []string{"127.0.0.1"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	creds := CAServerCredentials(serverCert)
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -439,11 +441,6 @@ func writePKI(t *testing.T, dir string) {
 		BasicConstraintsValid: true,
 		KeyUsage:              x509.KeyUsageCertSign,
 	}, nil, nil)
-	issue(t, dir, "server", &x509.Certificate{
-		Subject:     pkix.Name{CommonName: "server"},
-		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}, caCert, caKey)
 	issue(t, dir, "agent", &x509.Certificate{
 		Subject:     pkix.Name{CommonName: "agent-1"},
 		NotAfter:    time.Now().Add(3 * time.Second),
