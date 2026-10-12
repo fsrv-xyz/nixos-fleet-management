@@ -15,6 +15,11 @@
         default = pkgs.callPackage ./nix/package.nix { };
       });
 
+      # nix flake check only evaluates packages; listed here, it builds and tests them.
+      checks = forAllSystems (pkgs: {
+        package = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+      });
+
       nixosModules = {
         agent = withPackage "fleet-agent" ./nix/agent.nix;
         server = withPackage "fleet-server" ./nix/server.nix;
