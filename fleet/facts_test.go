@@ -57,6 +57,27 @@ func TestNixOSGeneration(t *testing.T) {
 	if !proto.Equal(g, want) {
 		t.Errorf("generation = %v, want %v", g, want)
 	}
+
+	booted := "/nix/store/ccc-nixos-system-host-26.05"
+	if err := os.Remove(filepath.Join(root, "run/booted-system")); err != nil {
+		t.Fatal(err)
+	}
+	link(booted, "run/booted-system")
+	for _, system := range []string{running, booted} {
+		link("/nix/store/kernel-1", filepath.Join(system, "kernel"))
+		link("/nix/store/initrd-1", filepath.Join(system, "initrd"))
+		link("/nix/store/modules-1", filepath.Join(system, "kernel-modules"))
+	}
+	if g, err := nixosGeneration(root); err != nil || g.RebootRequired {
+		t.Errorf("booted system with the same kernel, initrd and modules: reboot required = %v, %v", g.GetRebootRequired(), err)
+	}
+	if err := os.Remove(filepath.Join(root, running, "kernel")); err != nil {
+		t.Fatal(err)
+	}
+	link("/nix/store/kernel-2", filepath.Join(running, "kernel"))
+	if g, err := nixosGeneration(root); err != nil || !g.RebootRequired {
+		t.Errorf("booted system with another kernel: reboot required = %v, %v", g.GetRebootRequired(), err)
+	}
 }
 
 func TestCollectFactsIncludesUname(t *testing.T) {

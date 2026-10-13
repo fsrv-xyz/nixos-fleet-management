@@ -89,7 +89,7 @@ function cell(tr, text, title, className) {
 function nixosCell(tr, nixos) {
   if (!nixos) return cell(tr);
   const notes = [];
-  if (nixos.bootedStorePath && nixos.bootedStorePath !== nixos.storePath) notes.push("reboot pending");
+  if (nixos.rebootRequired) notes.push("reboot pending");
   if (nixos.profileStorePath && nixos.profileStorePath !== nixos.storePath) notes.push(`next boot ${short(nixos.profileStorePath)}`);
   const text = [`#${nixos.number ?? 0} ${nixos.nixosVersion}`, ...notes].join(", ");
   return cell(tr, text, nixos.storePath, notes.length ? "warn" : "");

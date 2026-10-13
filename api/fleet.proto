@@ -43,15 +43,17 @@ message Uname {
 }
 
 // The running system: number is the generation in /nix/var/nix/profiles whose
-// target is store_path, 0 if no generation points to it. booted_store_path differs
-// from store_path while a reboot is pending, profile_store_path after a
-// configuration that only becomes active on the next boot.
+// target is store_path, 0 if no generation points to it. profile_store_path differs
+// from store_path after a configuration that only becomes active on the next boot.
+// reboot_required is set when the booted system has another kernel, initrd or
+// kernel modules than the running one, the check of NixOS system.autoUpgrade.
 message NixOSGeneration {
   uint32 number = 1;
   string store_path = 2;
   string nixos_version = 3;
   string booted_store_path = 4;
   string profile_store_path = 5;
+  bool reboot_required = 6;
 }
 
 message DeployProgress {
