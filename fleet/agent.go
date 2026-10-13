@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"log"
+	"net"
 	"os"
 	"sync/atomic"
 	"time"
@@ -22,7 +23,10 @@ import (
 const (
 	maxReconnectDelay = 10 * time.Second
 	renewRetryDelay   = time.Minute
+	ipv6ProbeTimeout  = 5 * time.Second
 )
+
+var ipv6RecheckInterval = 5 * time.Minute
 
 func RunAgent(ctx context.Context, addrs []string, caFile, certFile, keyFile string, interval time.Duration) error {
 	pool, err := loadPool(caFile)
@@ -85,9 +89,48 @@ func dial(addrs []string, creds credentials.TransportCredentials, opts ...grpc.D
 	r.InitialState(resolver.State{Endpoints: endpoints})
 	return grpc.NewClient(r.Scheme()+":///servers", append(opts,
 		grpc.WithResolvers(r),
+		grpc.WithContextDialer(dialPreferringIPv6),
 		grpc.WithTransportCredentials(creds),
 		grpc.WithDefaultServiceConfig(`{"loadBalancingConfig": [{"pick_first": {"shuffleAddressList": true}}]}`),
 	)...)
+}
+
+// dialPreferringIPv6 closes a connection that fell back to IPv4 once addr is
+// reachable over IPv6, so gRPC reconnects and the dialer picks IPv6 again.
+func dialPreferringIPv6(ctx context.Context, addr string) (net.Conn, error) {
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	if tcp := conn.(*net.TCPConn); tcp.RemoteAddr().(*net.TCPAddr).IP.To4() != nil {
+		go recheckIPv6(tcp, addr)
+	}
+	return conn, nil
+}
+
+func recheckIPv6(conn *net.TCPConn, addr string) {
+	ticker := time.NewTicker(ipv6RecheckInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		if isClosed(conn) {
+			return
+		}
+		probe, err := (&net.Dialer{Timeout: ipv6ProbeTimeout}).Dial("tcp6", addr)
+		if err != nil {
+			continue
+		}
+		probe.Close()
+		log.Printf("%s is reachable over IPv6, leaving IPv4", addr)
+		conn.Close()
+		return
+	}
+}
+
+// isClosed checks conn without a wrapper, which would hide *net.TCPConn from
+// gRPC and with it the TCP user timeout gRPC sets.
+func isClosed(conn *net.TCPConn) bool {
+	raw, err := conn.SyscallConn()
+	return err != nil || raw.Control(func(uintptr) {}) != nil
 }
 
 // renewLoop renews the certificate after two thirds of its lifetime. Established
