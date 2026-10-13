@@ -54,7 +54,9 @@ node1 SHA256:4C0AE12A…
 # fleet-ca sign node1
 ```
 
-The agent renews its certificate after two thirds of its lifetime.
+The agent renews its certificate after two thirds of its lifetime. Connected
+over IPv4, it checks every five minutes whether its server answers over IPv6 and
+reconnects once it does.
 
 To deploy, build a host's system closure, push it to a cache the host substitutes
 from, and assign it:
