@@ -393,9 +393,10 @@ func (x *Uname) GetMachine() string {
 }
 
 // The running system: number is the generation in /nix/var/nix/profiles whose
-// target is store_path, 0 if no generation points to it. booted_store_path differs
-// from store_path while a reboot is pending, profile_store_path after a
-// configuration that only becomes active on the next boot.
+// target is store_path, 0 if no generation points to it. profile_store_path differs
+// from store_path after a configuration that only becomes active on the next boot.
+// reboot_required is set when the booted system has another kernel, initrd or
+// kernel modules than the running one, the check of NixOS system.autoUpgrade.
 type NixOSGeneration struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	Number           uint32                 `protobuf:"varint,1,opt,name=number,proto3" json:"number,omitempty"`
@@ -403,6 +404,7 @@ type NixOSGeneration struct {
 	NixosVersion     string                 `protobuf:"bytes,3,opt,name=nixos_version,json=nixosVersion,proto3" json:"nixos_version,omitempty"`
 	BootedStorePath  string                 `protobuf:"bytes,4,opt,name=booted_store_path,json=bootedStorePath,proto3" json:"booted_store_path,omitempty"`
 	ProfileStorePath string                 `protobuf:"bytes,5,opt,name=profile_store_path,json=profileStorePath,proto3" json:"profile_store_path,omitempty"`
+	RebootRequired   bool                   `protobuf:"varint,6,opt,name=reboot_required,json=rebootRequired,proto3" json:"reboot_required,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -470,6 +472,13 @@ func (x *NixOSGeneration) GetProfileStorePath() string {
 		return x.ProfileStorePath
 	}
 	return ""
+}
+
+func (x *NixOSGeneration) GetRebootRequired() bool {
+	if x != nil {
+		return x.RebootRequired
+	}
+	return false
 }
 
 type DeployProgress struct {
@@ -807,14 +816,15 @@ const file_fleet_proto_rawDesc = "" +
 	"\bnodename\x18\x02 \x01(\tR\bnodename\x12\x18\n" +
 	"\arelease\x18\x03 \x01(\tR\arelease\x12\x18\n" +
 	"\aversion\x18\x04 \x01(\tR\aversion\x12\x18\n" +
-	"\amachine\x18\x05 \x01(\tR\amachine\"\xc7\x01\n" +
+	"\amachine\x18\x05 \x01(\tR\amachine\"\xf0\x01\n" +
 	"\x0fNixOSGeneration\x12\x16\n" +
 	"\x06number\x18\x01 \x01(\rR\x06number\x12\x1d\n" +
 	"\n" +
 	"store_path\x18\x02 \x01(\tR\tstorePath\x12#\n" +
 	"\rnixos_version\x18\x03 \x01(\tR\fnixosVersion\x12*\n" +
 	"\x11booted_store_path\x18\x04 \x01(\tR\x0fbootedStorePath\x12,\n" +
-	"\x12profile_store_path\x18\x05 \x01(\tR\x10profileStorePath\"\xec\x01\n" +
+	"\x12profile_store_path\x18\x05 \x01(\tR\x10profileStorePath\x12'\n" +
+	"\x0freboot_required\x18\x06 \x01(\bR\x0erebootRequired\"\xec\x01\n" +
 	"\x0eDeployProgress\x12\x1d\n" +
 	"\n" +
 	"store_path\x18\x01 \x01(\tR\tstorePath\x124\n" +

@@ -69,6 +69,23 @@ func readlinkIfExists(path string) (string, error) {
 	return target, err
 }
 
+func bootDiffers(root, booted, current string) (bool, error) {
+	for _, name := range []string{"kernel", "initrd", "kernel-modules"} {
+		b, err := readlinkIfExists(filepath.Join(root, booted, name))
+		if err != nil {
+			return false, err
+		}
+		c, err := readlinkIfExists(filepath.Join(root, current, name))
+		if err != nil {
+			return false, err
+		}
+		if b != c {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // nixosGeneration returns nil on hosts without a running NixOS system below root.
 // nixos-version is the marker, as nix-darwin also has /run/current-system.
 func nixosGeneration(root string) (*api.NixOSGeneration, error) {
@@ -89,6 +106,11 @@ func nixosGeneration(root string) (*api.NixOSGeneration, error) {
 	generation := &api.NixOSGeneration{StorePath: current, NixosVersion: strings.TrimSpace(string(version))}
 	if generation.BootedStorePath, err = readlinkIfExists(filepath.Join(root, "run/booted-system")); err != nil {
 		return nil, err
+	}
+	if generation.BootedStorePath != "" && generation.BootedStorePath != current {
+		if generation.RebootRequired, err = bootDiffers(root, generation.BootedStorePath, current); err != nil {
+			return nil, err
+		}
 	}
 	profiles := filepath.Join(root, systemProfiles)
 	profileLink, err := readlinkIfExists(filepath.Join(profiles, "system"))
