@@ -17,6 +17,7 @@ import (
 	"math/big"
 	"net"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -31,6 +32,8 @@ const (
 	agentCertValidity = 825 * 24 * time.Hour
 	requestsPrefix    = "/ca/requests/"
 	signedPrefix      = "/ca/signed/"
+	deployersPrefix   = "/ca/deployers/"
+	deployerOU        = "deploy"
 )
 
 var certnamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*$`)
@@ -151,6 +154,79 @@ func (c *CA) Renew(ctx context.Context, name string, pub crypto.PublicKey) ([]by
 	}
 	log.Printf("renewed certificate for %s", name)
 	return certPEM, nil
+}
+
+// IssueDeployer creates a key and a deploy certificate for name and keeps the
+// certificate on file, replacing and so revoking an earlier one.
+func (c *CA) IssueDeployer(ctx context.Context, name string) (certPEM, keyPEM []byte, err error) {
+	if !certnamePattern.MatchString(name) {
+		return nil, nil, fmt.Errorf("invalid name %q", name)
+	}
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	now := time.Now()
+	der, err := c.sign(&x509.Certificate{
+		Subject:     pkix.Name{CommonName: name, OrganizationalUnit: []string{deployerOU}},
+		NotBefore:   now,
+		NotAfter:    now.Add(agentCertValidity),
+		KeyUsage:    x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}, public)
+	if err != nil {
+		return nil, nil, err
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(private)
+	if err != nil {
+		return nil, nil, err
+	}
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	if _, err := c.etcd.Put(ctx, deployersPrefix+name, string(certPEM)); err != nil {
+		return nil, nil, err
+	}
+	return certPEM, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), nil
+}
+
+func (c *CA) RevokeDeployer(ctx context.Context, name string) error {
+	resp, err := c.etcd.Delete(ctx, deployersPrefix+name)
+	if err != nil {
+		return err
+	}
+	if resp.Deleted == 0 {
+		return fmt.Errorf("no deploy certificate for %q", name)
+	}
+	return nil
+}
+
+// authorizeDeployer accepts only the deploy certificate on file for its name, so
+// reissuing or revoking takes effect on the next call.
+func (c *CA) authorizeDeployer(ctx context.Context, cert *x509.Certificate) error {
+	if !isDeployer(cert) {
+		return status.Error(codes.PermissionDenied, "not a deploy certificate")
+	}
+	name := cert.Subject.CommonName
+	resp, err := c.etcd.Get(ctx, deployersPrefix+name)
+	if err != nil {
+		return status.Errorf(codes.Unavailable, "read deploy certificate: %v", err)
+	}
+	if len(resp.Kvs) == 0 {
+		return status.Errorf(codes.PermissionDenied, "no deploy certificate on file for %s", name)
+	}
+	onFile, err := parseCertificate(resp.Kvs[0].Value)
+	if err != nil {
+		return err
+	}
+	if !onFile.Equal(cert) {
+		return status.Errorf(codes.PermissionDenied, "deploy certificate for %s was replaced", name)
+	}
+	return nil
+}
+
+// isDeployer relies on issue setting only the CN of agent certificates, so
+// agents can never obtain deployerOU.
+func isDeployer(cert *x509.Certificate) bool {
+	return slices.Contains(cert.Subject.OrganizationalUnit, deployerOU)
 }
 
 func (c *CA) commitIfUnchanged(ctx context.Context, key string, modRevision int64, ops ...clientv3.Op) error {
