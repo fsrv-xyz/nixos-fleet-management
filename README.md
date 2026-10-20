@@ -58,15 +58,28 @@ The agent renews its certificate after two thirds of its lifetime. Connected
 over IPv4, it checks every five minutes whether its server answers over IPv6 and
 reconnects once it does.
 
-To deploy, build a host's system closure, push it to a cache the host substitutes
-from, and assign it:
+To deploy from CI, issue a deploy certificate on a server and store the output,
+certificate and key, as a protected file variable of the pipeline:
+
+```console
+# fleet-ca deployer ci > ci.pem
+# fleet-ca revoke ci
+```
+
+A deploy certificate may deploy to every agent and cannot connect as an agent;
+reissuing or revoking it ends access at once. The pipeline builds a host's
+system closure, pushes it to a cache the host substitutes from, and assigns it:
 
 ```console
 $ nix build .#nixosConfigurations.node1.config.system.build.toplevel
 $ nix copy --to <cache> ./result
-$ echo '{"etcd": ["10.0.0.1:2379", "10.0.0.2:2379"]}' > ci.json
-$ fleet-server -config ci.json deploy node1 $(readlink ./result)
+$ echo '{"servers": ["srv:_fleet._tcp.example.org"], "ca": "fleet-ca.crt", "cert": "ci.pem", "key": "ci.pem"}' > deploy.json
+$ fleet-deploy -config deploy.json -wait 15m node1 $(readlink ./result)
 ```
+
+With `-wait`, `fleet-deploy` prints the agent's progress and fails if the
+deployment fails or does not finish in time; the assignment stays either way.
+On a server, the module's `fleet-deploy` wrapper assigns through etcd directly.
 
 The agent fetches the closure, sets the system profile and runs
 `switch-to-configuration switch` in the unit `nixos-rebuild-switch-to-configuration`,
@@ -86,8 +99,8 @@ $ go run ./cmd/fleet-server ca sign dev
 
 All state lives in etcd below `etcdPrefix` (default `/fleet`).
 
-Both binaries take a single `-config` JSON file; its fields are the `config`
-structs in `cmd/fleet-server` and `cmd/fleet-agent`, unknown fields are rejected.
+All binaries take a single `-config` JSON file; its fields are the `config`
+structs in `cmd/*`, unknown fields are rejected.
 Without it, the defaults above apply.
 
 `go generate ./api` regenerates the gRPC code; `go test ./...` runs the tests
