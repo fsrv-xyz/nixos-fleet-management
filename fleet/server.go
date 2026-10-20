@@ -115,6 +115,7 @@ func NewGRPCServer(creds credentials.TransportCredentials, srv *Server) *grpc.Se
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{MinTime: 10 * time.Second, PermitWithoutStream: true}),
 	)
 	api.RegisterFleetServer(s, srv)
+	api.RegisterDeploymentsServer(s, &Deployments{ca: srv.ca, etcd: srv.etcd})
 	return s
 }
 

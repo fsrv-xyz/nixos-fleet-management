@@ -20,16 +20,27 @@ const progressInterval = time.Second
 // Nix base32 hash (no e, o, t, u) and the characters Nix allows in store path names.
 var storePathPattern = regexp.MustCompile(`^/nix/store/[0-9a-df-np-sv-z]{32}-[0-9a-zA-Z+\-._?=]+$`)
 
-// SetDesired makes the agent with certname switch to storePath.
-func SetDesired(ctx context.Context, etcd *clientv3.Client, certname, storePath string) error {
+func validateDeploy(certname, storePath string) error {
 	if !certnamePattern.MatchString(certname) {
 		return fmt.Errorf("invalid certname %q", certname)
 	}
 	if !storePathPattern.MatchString(storePath) {
 		return fmt.Errorf("invalid store path %q", storePath)
 	}
-	_, err := etcd.Put(ctx, agentsPrefix+certname+"/desired", storePath)
-	return err
+	return nil
+}
+
+// SetDesired makes the agent with certname switch to storePath and returns the
+// etcd revision of that change.
+func SetDesired(ctx context.Context, etcd *clientv3.Client, certname, storePath string) (int64, error) {
+	if err := validateDeploy(certname, storePath); err != nil {
+		return 0, err
+	}
+	resp, err := etcd.Put(ctx, agentsPrefix+certname+"/desired", storePath)
+	if err != nil {
+		return 0, err
+	}
+	return resp.Header.Revision, nil
 }
 
 // deployer switches the host to the latest offered store path, one deployment

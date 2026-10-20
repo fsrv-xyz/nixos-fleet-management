@@ -156,6 +156,115 @@ var Fleet_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
+	Deployments_Deploy_FullMethodName = "/fleet.v1.Deployments/Deploy"
+)
+
+// DeploymentsClient is the client API for Deployments service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type DeploymentsClient interface {
+	// Ends after assigning store_path unless wait is set; then it streams the
+	// agent's progress for store_path until done or failed.
+	Deploy(ctx context.Context, in *DeployRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[DeployProgress], error)
+}
+
+type deploymentsClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewDeploymentsClient(cc grpc.ClientConnInterface) DeploymentsClient {
+	return &deploymentsClient{cc}
+}
+
+func (c *deploymentsClient) Deploy(ctx context.Context, in *DeployRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[DeployProgress], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Deployments_ServiceDesc.Streams[0], Deployments_Deploy_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[DeployRequest, DeployProgress]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Deployments_DeployClient = grpc.ServerStreamingClient[DeployProgress]
+
+// DeploymentsServer is the server API for Deployments service.
+// All implementations must embed UnimplementedDeploymentsServer
+// for forward compatibility.
+type DeploymentsServer interface {
+	// Ends after assigning store_path unless wait is set; then it streams the
+	// agent's progress for store_path until done or failed.
+	Deploy(*DeployRequest, grpc.ServerStreamingServer[DeployProgress]) error
+	mustEmbedUnimplementedDeploymentsServer()
+}
+
+// UnimplementedDeploymentsServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedDeploymentsServer struct{}
+
+func (UnimplementedDeploymentsServer) Deploy(*DeployRequest, grpc.ServerStreamingServer[DeployProgress]) error {
+	return status.Error(codes.Unimplemented, "method Deploy not implemented")
+}
+func (UnimplementedDeploymentsServer) mustEmbedUnimplementedDeploymentsServer() {}
+func (UnimplementedDeploymentsServer) testEmbeddedByValue()                     {}
+
+// UnsafeDeploymentsServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to DeploymentsServer will
+// result in compilation errors.
+type UnsafeDeploymentsServer interface {
+	mustEmbedUnimplementedDeploymentsServer()
+}
+
+func RegisterDeploymentsServer(s grpc.ServiceRegistrar, srv DeploymentsServer) {
+	// If the following call panics, it indicates UnimplementedDeploymentsServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&Deployments_ServiceDesc, srv)
+}
+
+func _Deployments_Deploy_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(DeployRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(DeploymentsServer).Deploy(m, &grpc.GenericServerStream[DeployRequest, DeployProgress]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Deployments_DeployServer = grpc.ServerStreamingServer[DeployProgress]
+
+// Deployments_ServiceDesc is the grpc.ServiceDesc for Deployments service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var Deployments_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "fleet.v1.Deployments",
+	HandlerType: (*DeploymentsServer)(nil),
+	Methods:     []grpc.MethodDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "Deploy",
+			Handler:       _Deployments_Deploy_Handler,
+			ServerStreams: true,
+		},
+	},
+	Metadata: "fleet.proto",
+}
+
+const (
 	CertificateAuthority_RequestCertificate_FullMethodName = "/fleet.v1.CertificateAuthority/RequestCertificate"
 )
 
