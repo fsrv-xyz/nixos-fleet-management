@@ -214,7 +214,7 @@ func deployCommand(cfg config, args []string) {
 	defer etcd.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), etcdTimeout)
 	defer cancel()
-	if err := fleet.SetDesired(ctx, etcd, args[0], args[1]); err != nil {
+	if _, err := fleet.SetDesired(ctx, etcd, args[0], args[1]); err != nil {
 		log.Fatal(err)
 	}
 }

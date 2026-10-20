@@ -705,6 +705,66 @@ func (*RenewCertificateRequest) Descriptor() ([]byte, []int) {
 	return file_fleet_proto_rawDescGZIP(), []int{9}
 }
 
+type DeployRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Certname      string                 `protobuf:"bytes,1,opt,name=certname,proto3" json:"certname,omitempty"`
+	StorePath     string                 `protobuf:"bytes,2,opt,name=store_path,json=storePath,proto3" json:"store_path,omitempty"`
+	Wait          bool                   `protobuf:"varint,3,opt,name=wait,proto3" json:"wait,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeployRequest) Reset() {
+	*x = DeployRequest{}
+	mi := &file_fleet_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeployRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeployRequest) ProtoMessage() {}
+
+func (x *DeployRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_fleet_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeployRequest.ProtoReflect.Descriptor instead.
+func (*DeployRequest) Descriptor() ([]byte, []int) {
+	return file_fleet_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *DeployRequest) GetCertname() string {
+	if x != nil {
+		return x.Certname
+	}
+	return ""
+}
+
+func (x *DeployRequest) GetStorePath() string {
+	if x != nil {
+		return x.StorePath
+	}
+	return ""
+}
+
+func (x *DeployRequest) GetWait() bool {
+	if x != nil {
+		return x.Wait
+	}
+	return false
+}
+
 type CertificateRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Csr           []byte                 `protobuf:"bytes,1,opt,name=csr,proto3" json:"csr,omitempty"`
@@ -714,7 +774,7 @@ type CertificateRequest struct {
 
 func (x *CertificateRequest) Reset() {
 	*x = CertificateRequest{}
-	mi := &file_fleet_proto_msgTypes[10]
+	mi := &file_fleet_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -726,7 +786,7 @@ func (x *CertificateRequest) String() string {
 func (*CertificateRequest) ProtoMessage() {}
 
 func (x *CertificateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fleet_proto_msgTypes[10]
+	mi := &file_fleet_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -739,7 +799,7 @@ func (x *CertificateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CertificateRequest.ProtoReflect.Descriptor instead.
 func (*CertificateRequest) Descriptor() ([]byte, []int) {
-	return file_fleet_proto_rawDescGZIP(), []int{10}
+	return file_fleet_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *CertificateRequest) GetCsr() []byte {
@@ -759,7 +819,7 @@ type CertificateResponse struct {
 
 func (x *CertificateResponse) Reset() {
 	*x = CertificateResponse{}
-	mi := &file_fleet_proto_msgTypes[11]
+	mi := &file_fleet_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -771,7 +831,7 @@ func (x *CertificateResponse) String() string {
 func (*CertificateResponse) ProtoMessage() {}
 
 func (x *CertificateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fleet_proto_msgTypes[11]
+	mi := &file_fleet_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -784,7 +844,7 @@ func (x *CertificateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CertificateResponse.ProtoReflect.Descriptor instead.
 func (*CertificateResponse) Descriptor() ([]byte, []int) {
-	return file_fleet_proto_rawDescGZIP(), []int{11}
+	return file_fleet_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *CertificateResponse) GetCertificate() []byte {
@@ -844,14 +904,21 @@ const file_fleet_proto_rawDesc = "" +
 	"\x06Deploy\x12\x1d\n" +
 	"\n" +
 	"store_path\x18\x01 \x01(\tR\tstorePath\"\x19\n" +
-	"\x17RenewCertificateRequest\"&\n" +
+	"\x17RenewCertificateRequest\"^\n" +
+	"\rDeployRequest\x12\x1a\n" +
+	"\bcertname\x18\x01 \x01(\tR\bcertname\x12\x1d\n" +
+	"\n" +
+	"store_path\x18\x02 \x01(\tR\tstorePath\x12\x12\n" +
+	"\x04wait\x18\x03 \x01(\bR\x04wait\"&\n" +
 	"\x12CertificateRequest\x12\x10\n" +
 	"\x03csr\x18\x01 \x01(\fR\x03csr\"7\n" +
 	"\x13CertificateResponse\x12 \n" +
 	"\vcertificate\x18\x01 \x01(\fR\vcertificate2\x9d\x01\n" +
 	"\x05Fleet\x12>\n" +
 	"\aConnect\x12\x16.fleet.v1.AgentMessage\x1a\x17.fleet.v1.ServerMessage(\x010\x01\x12T\n" +
-	"\x10RenewCertificate\x12!.fleet.v1.RenewCertificateRequest\x1a\x1d.fleet.v1.CertificateResponse2i\n" +
+	"\x10RenewCertificate\x12!.fleet.v1.RenewCertificateRequest\x1a\x1d.fleet.v1.CertificateResponse2L\n" +
+	"\vDeployments\x12=\n" +
+	"\x06Deploy\x12\x17.fleet.v1.DeployRequest\x1a\x18.fleet.v1.DeployProgress0\x012i\n" +
 	"\x14CertificateAuthority\x12Q\n" +
 	"\x12RequestCertificate\x12\x1c.fleet.v1.CertificateRequest\x1a\x1d.fleet.v1.CertificateResponseB\x1cZ\x1anixos-fleet-management/apib\x06proto3"
 
@@ -868,7 +935,7 @@ func file_fleet_proto_rawDescGZIP() []byte {
 }
 
 var file_fleet_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_fleet_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_fleet_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_fleet_proto_goTypes = []any{
 	(DeployProgress_Phase)(0),       // 0: fleet.v1.DeployProgress.Phase
 	(*AgentMessage)(nil),            // 1: fleet.v1.AgentMessage
@@ -881,25 +948,28 @@ var file_fleet_proto_goTypes = []any{
 	(*ServerMessage)(nil),           // 8: fleet.v1.ServerMessage
 	(*Deploy)(nil),                  // 9: fleet.v1.Deploy
 	(*RenewCertificateRequest)(nil), // 10: fleet.v1.RenewCertificateRequest
-	(*CertificateRequest)(nil),      // 11: fleet.v1.CertificateRequest
-	(*CertificateResponse)(nil),     // 12: fleet.v1.CertificateResponse
-	(*anypb.Any)(nil),               // 13: google.protobuf.Any
+	(*DeployRequest)(nil),           // 11: fleet.v1.DeployRequest
+	(*CertificateRequest)(nil),      // 12: fleet.v1.CertificateRequest
+	(*CertificateResponse)(nil),     // 13: fleet.v1.CertificateResponse
+	(*anypb.Any)(nil),               // 14: google.protobuf.Any
 }
 var file_fleet_proto_depIdxs = []int32{
 	2,  // 0: fleet.v1.AgentMessage.heartbeat:type_name -> fleet.v1.Heartbeat
 	3,  // 1: fleet.v1.AgentMessage.facts:type_name -> fleet.v1.Facts
 	7,  // 2: fleet.v1.AgentMessage.deploy_progress:type_name -> fleet.v1.DeployProgress
-	13, // 3: fleet.v1.Facts.facts:type_name -> google.protobuf.Any
+	14, // 3: fleet.v1.Facts.facts:type_name -> google.protobuf.Any
 	0,  // 4: fleet.v1.DeployProgress.phase:type_name -> fleet.v1.DeployProgress.Phase
 	9,  // 5: fleet.v1.ServerMessage.deploy:type_name -> fleet.v1.Deploy
 	1,  // 6: fleet.v1.Fleet.Connect:input_type -> fleet.v1.AgentMessage
 	10, // 7: fleet.v1.Fleet.RenewCertificate:input_type -> fleet.v1.RenewCertificateRequest
-	11, // 8: fleet.v1.CertificateAuthority.RequestCertificate:input_type -> fleet.v1.CertificateRequest
-	8,  // 9: fleet.v1.Fleet.Connect:output_type -> fleet.v1.ServerMessage
-	12, // 10: fleet.v1.Fleet.RenewCertificate:output_type -> fleet.v1.CertificateResponse
-	12, // 11: fleet.v1.CertificateAuthority.RequestCertificate:output_type -> fleet.v1.CertificateResponse
-	9,  // [9:12] is the sub-list for method output_type
-	6,  // [6:9] is the sub-list for method input_type
+	11, // 8: fleet.v1.Deployments.Deploy:input_type -> fleet.v1.DeployRequest
+	12, // 9: fleet.v1.CertificateAuthority.RequestCertificate:input_type -> fleet.v1.CertificateRequest
+	8,  // 10: fleet.v1.Fleet.Connect:output_type -> fleet.v1.ServerMessage
+	13, // 11: fleet.v1.Fleet.RenewCertificate:output_type -> fleet.v1.CertificateResponse
+	7,  // 12: fleet.v1.Deployments.Deploy:output_type -> fleet.v1.DeployProgress
+	13, // 13: fleet.v1.CertificateAuthority.RequestCertificate:output_type -> fleet.v1.CertificateResponse
+	10, // [10:14] is the sub-list for method output_type
+	6,  // [6:10] is the sub-list for method input_type
 	6,  // [6:6] is the sub-list for extension type_name
 	6,  // [6:6] is the sub-list for extension extendee
 	0,  // [0:6] is the sub-list for field type_name
@@ -925,9 +995,9 @@ func file_fleet_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_fleet_proto_rawDesc), len(file_fleet_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   12,
+			NumMessages:   13,
 			NumExtensions: 0,
-			NumServices:   2,
+			NumServices:   3,
 		},
 		GoTypes:           file_fleet_proto_goTypes,
 		DependencyIndexes: file_fleet_proto_depIdxs,

@@ -84,6 +84,18 @@ message Deploy {
 
 message RenewCertificateRequest {}
 
+service Deployments {
+  // Ends after assigning store_path unless wait is set; then it streams the
+  // agent's progress for store_path until done or failed.
+  rpc Deploy(DeployRequest) returns (stream DeployProgress);
+}
+
+message DeployRequest {
+  string certname = 1;
+  string store_path = 2;
+  bool wait = 3;
+}
+
 service CertificateAuthority {
   rpc RequestCertificate(CertificateRequest) returns (CertificateResponse);
 }

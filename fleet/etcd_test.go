@@ -21,7 +21,7 @@ func TestEtcdClientNamespace(t *testing.T) {
 
 	watch := etcd.Watch(ctx, agentsPrefix, clientv3.WithPrefix())
 	path := storePath('a', "nixos-system-node1")
-	if err := SetDesired(ctx, etcd, "node1", path); err != nil {
+	if _, err := SetDesired(ctx, etcd, "node1", path); err != nil {
 		t.Fatal(err)
 	}
 

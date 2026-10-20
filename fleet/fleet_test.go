@@ -98,7 +98,7 @@ func TestAgentRenewsAndFailsOver(t *testing.T) {
 	}
 
 	desiredBefore, desiredAfter := storePath('a', "nixos-system-agent-1"), storePath('b', "nixos-system-agent-1")
-	if err := SetDesired(context.Background(), etcd, "agent-1", desiredBefore); err != nil {
+	if _, err := SetDesired(context.Background(), etcd, "agent-1", desiredBefore); err != nil {
 		t.Fatal(err)
 	}
 
@@ -187,7 +187,7 @@ func TestAgentRenewsAndFailsOver(t *testing.T) {
 			}
 		}
 		waitFor(deployed(desiredBefore))
-		if err := SetDesired(ctx, etcd, "agent-1", desiredAfter); err != nil {
+		if _, err := SetDesired(ctx, etcd, "agent-1", desiredAfter); err != nil {
 			t.Fatal(err)
 		}
 		waitFor(deployed(desiredAfter))
