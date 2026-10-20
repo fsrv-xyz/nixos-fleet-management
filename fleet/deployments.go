@@ -103,7 +103,7 @@ func RequestDeploy(ctx context.Context, addrs []string, caFile, certFile, keyFil
 		return err
 	}
 	defer conn.Close()
-	stream, err := api.NewDeploymentsClient(conn).Deploy(ctx, &api.DeployRequest{Certname: certname, StorePath: storePath, Wait: wait}, grpc.WaitForReady(true))
+	stream, err := api.NewDeploymentsClient(conn).Deploy(ctx, &api.DeployRequest{Certname: certname, StorePath: storePath, Wait: wait})
 	if err != nil {
 		return err
 	}

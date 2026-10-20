@@ -214,6 +214,15 @@ func TestDeploy(t *testing.T) {
 		t.Fatalf("rejected requests changed desired to %q", got)
 	}
 
+	otherCA := t.TempDir()
+	writePKI(t, otherCA)
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	err = RequestDeploy(waitCtx, []string{lis.Addr().String()}, filepath.Join(otherCA, "ca.crt"), ciFile, ciFile, "agent-2", second, true, func(*api.DeployProgress) {})
+	if status.Code(err) != codes.Unavailable || waitCtx.Err() != nil {
+		t.Errorf("server certificate from another CA: %v, want Unavailable before the deadline", err)
+	}
+
 	report(second, api.DeployProgress_PHASE_DONE, "from an earlier deployment")
 	done := ciDeploy(second, true, 10*time.Second)
 	waitForDesired(second)
@@ -231,7 +240,7 @@ func TestDeploy(t *testing.T) {
 		t.Errorf("wait for failure: %v", r.err)
 	}
 
-	if r := <-ciDeploy(second, true, 300*time.Millisecond); status.Code(r.err) != codes.DeadlineExceeded {
+	if r := <-ciDeploy(second, true, 2*time.Second); status.Code(r.err) != codes.DeadlineExceeded {
 		t.Errorf("wait without progress: %v, want DeadlineExceeded", r.err)
 	}
 	if got := desired(); got != second {
