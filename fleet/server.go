@@ -455,7 +455,7 @@ func sortedAgents(list []AgentStatus) []AgentStatus {
 }
 
 func (s *Server) RenewCertificate(ctx context.Context, _ *api.RenewCertificateRequest) (*api.CertificateResponse, error) {
-	cert, err := clientCertificate(ctx)
+	cert, err := agentCertificate(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -467,11 +467,22 @@ func (s *Server) RenewCertificate(ctx context.Context, _ *api.RenewCertificateRe
 }
 
 func AgentID(ctx context.Context) (string, error) {
-	cert, err := clientCertificate(ctx)
+	cert, err := agentCertificate(ctx)
 	if err != nil {
 		return "", err
 	}
 	return cert.Subject.CommonName, nil
+}
+
+func agentCertificate(ctx context.Context) (*x509.Certificate, error) {
+	cert, err := clientCertificate(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if isDeployer(cert) {
+		return nil, status.Error(codes.PermissionDenied, "deploy certificates cannot act as agents")
+	}
+	return cert, nil
 }
 
 func clientCertificate(ctx context.Context) (*x509.Certificate, error) {

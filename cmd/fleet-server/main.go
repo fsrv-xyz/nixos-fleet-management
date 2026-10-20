@@ -46,6 +46,7 @@ func main() {
 		fmt.Fprintln(flag.CommandLine.Output(), `usage:
   fleet-server [-config file]                                 serve
   fleet-server [-config file] ca list | sign <certname>...    manage agent certificates
+  fleet-server [-config file] ca deployer | revoke <name>     issue or revoke a deploy certificate
   fleet-server [-config file] deploy <certname> <store path>  assign a system closure`)
 		flag.PrintDefaults()
 	}
@@ -158,7 +159,9 @@ func serve(cfg config) {
 func caCommand(cfg config, args []string) {
 	list := len(args) == 1 && args[0] == "list"
 	sign := len(args) > 1 && args[0] == "sign"
-	if !list && !sign {
+	deployer := len(args) == 2 && args[0] == "deployer"
+	revoke := len(args) == 2 && args[0] == "revoke"
+	if !list && !sign && !deployer && !revoke {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -173,17 +176,29 @@ func caCommand(cfg config, args []string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), etcdTimeout)
 	defer cancel()
-	if list {
+	switch {
+	case list:
 		if err := ca.List(ctx, os.Stdout); err != nil {
 			log.Fatal(err)
 		}
-		return
-	}
-	for _, name := range args[1:] {
-		if err := ca.Sign(ctx, name); err != nil {
+	case deployer:
+		certPEM, keyPEM, err := ca.IssueDeployer(ctx, args[1])
+		if err != nil {
 			log.Fatal(err)
 		}
-		fmt.Printf("signed %s\n", name)
+		os.Stdout.Write(certPEM)
+		os.Stdout.Write(keyPEM)
+	case revoke:
+		if err := ca.RevokeDeployer(ctx, args[1]); err != nil {
+			log.Fatal(err)
+		}
+	default:
+		for _, name := range args[1:] {
+			if err := ca.Sign(ctx, name); err != nil {
+				log.Fatal(err)
+			}
+			fmt.Printf("signed %s\n", name)
+		}
 	}
 }
 
