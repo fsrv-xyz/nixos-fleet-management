@@ -182,11 +182,25 @@ func TestDeploy(t *testing.T) {
 			}
 		}
 	}
+	// report stores progress as an agent before revisions in Deploy would.
 	report := func(path string, phase api.DeployProgress_Phase, message string) {
 		t.Helper()
 		if err := fleetServer.storeDeployProgress(ctx, "agent-2", &api.DeployProgress{StorePath: path, Phase: phase, Message: message}); err != nil {
 			t.Fatal(err)
 		}
+	}
+	reportRevision := func(path string, revision int64, phase api.DeployProgress_Phase, message string) {
+		t.Helper()
+		if err := fleetServer.storeDeployProgress(ctx, "agent-2", &api.DeployProgress{StorePath: path, Revision: revision, Phase: phase, Message: message}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	revision := func() int64 {
+		resp, err := etcd.Get(ctx, agentsPrefix+"agent-2/desired")
+		if err != nil || len(resp.Kvs) == 0 {
+			return 0
+		}
+		return resp.Kvs[0].ModRevision
 	}
 	first, second := storePath('a', "nixos-system-agent-2"), storePath('b', "nixos-system-agent-2")
 
@@ -238,6 +252,20 @@ func TestDeploy(t *testing.T) {
 	report(first, api.DeployProgress_PHASE_FAILED, "switch failed")
 	if r := <-done; r.err == nil || !strings.Contains(r.err.Error(), "switch failed") {
 		t.Errorf("wait for failure: %v", r.err)
+	}
+
+	// Assigned again while the previous switch to it still runs, its late failure does not count.
+	earlier := revision()
+	done = ciDeploy(first, true, 10*time.Second)
+	for deadline := time.Now().Add(5 * time.Second); revision() == earlier; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("not assigned again")
+		}
+	}
+	reportRevision(first, earlier, api.DeployProgress_PHASE_FAILED, "earlier switch failed")
+	reportRevision(first, revision(), api.DeployProgress_PHASE_DONE, "")
+	if r := <-done; r.err != nil || !slices.Equal(r.phases, []string{"PHASE_DONE"}) {
+		t.Errorf("assigned again: %v, phases %v", r.err, r.phases)
 	}
 
 	if r := <-ciDeploy(second, true, 2*time.Second); status.Code(r.err) != codes.DeadlineExceeded {

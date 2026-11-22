@@ -95,6 +95,7 @@ type AgentStatus struct {
 
 type DeployStatus struct {
 	StorePath string    `json:"storePath"`
+	Revision  int64     `json:"revision,omitempty"`
 	Phase     string    `json:"phase"`
 	Message   string    `json:"message"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -245,6 +246,7 @@ func (s *Server) storeDeployProgress(ctx context.Context, id string, progress *a
 	}
 	data, err := json.Marshal(DeployStatus{
 		StorePath: progress.StorePath,
+		Revision:  progress.Revision,
 		Phase:     phase,
 		Message:   truncate(progress.Message, maxProgressMessage),
 		UpdatedAt: time.Now(),

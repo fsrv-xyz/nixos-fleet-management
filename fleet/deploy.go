@@ -3,8 +3,11 @@ package fleet
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -23,6 +26,9 @@ const (
 	// legacySwitchUnit ran switches of earlier agents and of nixos-rebuild; it is
 	// collected, so the result of a switch in it is unknown.
 	legacySwitchUnit = "nixos-rebuild-switch-to-configuration"
+	// failureRecord keeps a failed switch while its retry runs, as resetting the
+	// unit for the retry erases it there; in /run, it lasts until reboot like the unit.
+	failureRecord = "run/fleet-agent-switch.failed"
 )
 
 var switchPollInterval = time.Second
@@ -101,7 +107,7 @@ func (d *deployer) run(ctx context.Context) {
 
 func (d *deployer) deploy(ctx context.Context, target *api.Deploy) {
 	storePath := target.StorePath
-	progress := newProgress(storePath, d.report)
+	progress := newProgress(target, d.report)
 	// Stopping the agent kills its commands; the restarted agent reports the outcome.
 	fail := func(err error) {
 		if ctx.Err() == nil {
@@ -118,10 +124,18 @@ func (d *deployer) deploy(ctx context.Context, target *api.Deploy) {
 		fail(err)
 		return
 	}
-	last, err := d.awaitUnit(ctx, switchUnit)
+	unit, err := d.awaitUnit(ctx, switchUnit)
 	if err != nil {
 		fail(err)
 		return
+	}
+	last := unit
+	recordPath := filepath.Join(d.root, failureRecord)
+	if !unit.failed() {
+		if last, err = readFailureRecord(recordPath); err != nil {
+			fail(err)
+			return
+		}
 	}
 	generation, err := nixosGeneration(d.root)
 	switch {
@@ -156,8 +170,12 @@ func (d *deployer) deploy(ctx context.Context, target *api.Deploy) {
 		fail(err)
 		return
 	}
-	if last.failed() {
-		log.Printf("previous switch to %s failed (%s)", last.storePath, last.result)
+	if unit.failed() {
+		log.Printf("previous switch to %s failed (%s)", unit.storePath, unit.result)
+		if err := os.WriteFile(recordPath, []byte(unit.record()), 0o644); err != nil {
+			fail(err)
+			return
+		}
 		if err := d.exec(ctx, progress, "systemctl", "reset-failed", switchUnit); err != nil {
 			fail(err)
 			return
@@ -170,6 +188,12 @@ func (d *deployer) deploy(ctx context.Context, target *api.Deploy) {
 		"--no-ask-password", "--quiet", "--service-type=exec",
 		"--unit="+switchUnit, fmt.Sprintf("--description=%s %d", storePath, target.Revision), "--wait",
 		storePath+"/bin/switch-to-configuration", "switch")
+	// A stopping agent leaves the switch running, so the record stays until it is known to end.
+	if ctx.Err() == nil {
+		if err := os.Remove(recordPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			log.Print(err)
+		}
+	}
 	if err != nil {
 		fail(fmt.Errorf("%w, see journalctl -u %s", err, switchUnit))
 		return
@@ -193,6 +217,30 @@ func (s unitState) failed() bool {
 
 func (s unitState) failure() string {
 	return fmt.Sprintf("switch failed (%s), see journalctl -u %s", s.result, switchUnit)
+}
+
+func (s unitState) record() string {
+	return fmt.Sprintf("%s %d %s", s.storePath, s.revision, s.result)
+}
+
+// readFailureRecord returns a successful state without a record.
+func readFailureRecord(path string) (unitState, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return unitState{result: "success"}, nil
+	}
+	if err != nil {
+		return unitState{}, err
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) != 3 {
+		return unitState{}, fmt.Errorf("%s: malformed failure record %q", path, data)
+	}
+	revision, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil {
+		return unitState{}, fmt.Errorf("%s: %w", path, err)
+	}
+	return unitState{storePath: fields[0], revision: revision, result: fields[2]}, nil
 }
 
 // awaitUnit waits for a running switch in unit and returns how it ended.
@@ -258,14 +306,14 @@ func (d *deployer) exec(ctx context.Context, progress *progress, name string, ar
 // progress sends phase changes at once and output lines at most once per
 // progressInterval, so a chatty command does not turn into a write per line.
 type progress struct {
-	storePath string
-	current   api.DeployProgress_Phase
-	sentAt    time.Time
-	report    func(*api.DeployProgress)
+	target  *api.Deploy
+	current api.DeployProgress_Phase
+	sentAt  time.Time
+	report  func(*api.DeployProgress)
 }
 
-func newProgress(storePath string, report func(*api.DeployProgress)) *progress {
-	return &progress{storePath: storePath, report: report}
+func newProgress(target *api.Deploy, report func(*api.DeployProgress)) *progress {
+	return &progress{target: target, report: report}
 }
 
 func (p *progress) phase(phase api.DeployProgress_Phase, message string) {
@@ -281,5 +329,5 @@ func (p *progress) line(message string) {
 
 func (p *progress) send(message string) {
 	p.sentAt = time.Now()
-	p.report(&api.DeployProgress{StorePath: p.storePath, Phase: p.current, Message: message})
+	p.report(&api.DeployProgress{StorePath: p.target.StorePath, Revision: p.target.Revision, Phase: p.current, Message: message})
 }
