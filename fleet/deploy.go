@@ -2,12 +2,14 @@ package fleet
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"log"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -15,7 +17,12 @@ import (
 	"nixos-fleet-management/api"
 )
 
-const progressInterval = time.Second
+const (
+	progressInterval = time.Second
+	switchUnit       = "nixos-rebuild-switch-to-configuration"
+)
+
+var switchPollInterval = time.Second
 
 // Nix base32 hash (no e, o, t, u) and the characters Nix allows in store path names.
 var storePathPattern = regexp.MustCompile(`^/nix/store/[0-9a-df-np-sv-z]{32}-[0-9a-zA-Z+\-._?=]+$`)
@@ -91,6 +98,12 @@ func (d *deployer) run(ctx context.Context) {
 
 func (d *deployer) deploy(ctx context.Context, storePath string) {
 	progress := newProgress(storePath, d.report)
+	// Stopping the agent kills its commands; the restarted agent reports the outcome.
+	fail := func(err error) {
+		if ctx.Err() == nil {
+			progress.phase(api.DeployProgress_PHASE_FAILED, err.Error())
+		}
+	}
 	if !storePathPattern.MatchString(storePath) {
 		progress.phase(api.DeployProgress_PHASE_FAILED, fmt.Sprintf("invalid store path %q", storePath))
 		return
@@ -104,6 +117,12 @@ func (d *deployer) deploy(ctx context.Context, storePath string) {
 		progress.phase(api.DeployProgress_PHASE_FAILED, "not a NixOS host")
 		return
 	case generation.StorePath == storePath:
+		// Activation sets /run/current-system before the switch restarts this
+		// agent and finishes, so only the switch unit knows whether it succeeded.
+		if err := d.switchResult(ctx); err != nil {
+			fail(err)
+			return
+		}
 		progress.phase(api.DeployProgress_PHASE_DONE, "already active")
 		return
 	}
@@ -111,27 +130,69 @@ func (d *deployer) deploy(ctx context.Context, storePath string) {
 	log.Printf("deploying %s", storePath)
 	progress.phase(api.DeployProgress_PHASE_REALISING, "")
 	if err := d.exec(ctx, progress, "nix-store", "--realise", storePath); err != nil {
-		progress.phase(api.DeployProgress_PHASE_FAILED, err.Error())
+		fail(err)
 		return
 	}
 	progress.phase(api.DeployProgress_PHASE_ACTIVATING, "")
 	if err := d.exec(ctx, progress, "nix-env", "--profile", filepath.Join(d.root, systemProfiles, "system"), "--set", storePath); err != nil {
-		progress.phase(api.DeployProgress_PHASE_FAILED, err.Error())
+		fail(err)
 		return
 	}
 	// A separate unit, as in nixos-rebuild: the switch may restart this agent and
-	// must finish anyway. Its output goes to the journal of that unit.
+	// must finish anyway. Its output goes to the journal of that unit. Without
+	// --collect, a failed unit stays loaded, so a restarted agent can read its result.
 	err = d.exec(ctx, progress, "systemd-run",
 		"-E", "LOCALE_ARCHIVE", "-E", "NIXOS_INSTALL_BOOTLOADER=0", "-E", "NIXOS_NO_CHECK",
-		"--collect", "--no-ask-password", "--quiet", "--service-type=exec",
-		"--unit=nixos-rebuild-switch-to-configuration", "--wait",
+		"--no-ask-password", "--quiet", "--service-type=exec",
+		"--unit="+switchUnit, "--wait",
 		storePath+"/bin/switch-to-configuration", "switch")
 	if err != nil {
-		progress.phase(api.DeployProgress_PHASE_FAILED, err.Error())
+		fail(err)
+		d.resetSwitch(ctx)
 		return
 	}
 	progress.phase(api.DeployProgress_PHASE_DONE, "")
 	log.Printf("deployed %s", storePath)
+}
+
+// switchResult waits for a running switch and returns its failure, resetting the
+// failed unit so the next switch can reuse its name.
+func (d *deployer) switchResult(ctx context.Context) error {
+	for {
+		output, err := d.command(ctx, "systemctl", "show", "--property=ActiveState,Result", switchUnit).Output()
+		if err != nil {
+			return fmt.Errorf("systemctl show %s: %w", switchUnit, err)
+		}
+		var state, result string
+		for line := range strings.Lines(string(output)) {
+			key, value, _ := strings.Cut(strings.TrimSpace(line), "=")
+			switch key {
+			case "ActiveState":
+				state = value
+			case "Result":
+				result = value
+			}
+		}
+		if state == "inactive" || state == "failed" {
+			if result == "success" {
+				return nil
+			}
+			d.resetSwitch(ctx)
+			return fmt.Errorf("switch failed (%s), see journalctl -u %s", result, switchUnit)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(switchPollInterval):
+		}
+	}
+}
+
+func (d *deployer) resetSwitch(ctx context.Context) {
+	output, err := d.command(ctx, "systemctl", "reset-failed", switchUnit).CombinedOutput()
+	if err != nil && ctx.Err() == nil {
+		log.Printf("systemctl reset-failed %s: %v: %s", switchUnit, err, bytes.TrimSpace(output))
+	}
 }
 
 // exec reports each output line of the command as progress and returns an error
