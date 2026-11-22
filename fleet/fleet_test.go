@@ -420,6 +420,41 @@ func TestCertificateSigning(t *testing.T) {
 	}
 }
 
+func TestCertificateRequestLimits(t *testing.T) {
+	dir := t.TempDir()
+	writePKI(t, dir)
+	ca, err := LoadCA(filepath.Join(dir, "ca.crt"), filepath.Join(dir, "ca.key"), startEtcd(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit := maxPendingRequests
+	maxPendingRequests = 1
+	t.Cleanup(func() { maxPendingRequests = limit })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	request := func(csr []byte) error {
+		_, err := ca.RequestCertificate(ctx, &api.CertificateRequest{Csr: csr})
+		return err
+	}
+	if err := request(append(rogueCSR(t, "node1"), bytes.Repeat([]byte("\n"), maxCSRSize)...)); status.Code(err) != codes.InvalidArgument {
+		t.Errorf("oversized request: %v", err)
+	}
+	if err := request(rogueCSR(t, strings.Repeat("a", 254))); status.Code(err) != codes.InvalidArgument {
+		t.Errorf("overlong name: %v", err)
+	}
+	node1 := rogueCSR(t, "node1")
+	if err := request(node1); err != nil {
+		t.Fatal(err)
+	}
+	if err := request(rogueCSR(t, "node2")); status.Code(err) != codes.ResourceExhausted {
+		t.Errorf("request beyond the limit: %v", err)
+	}
+	if err := request(node1); err != nil {
+		t.Errorf("pending agent asking again at the limit: %v", err)
+	}
+}
+
 func rogueCSR(t *testing.T, name string) []byte {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

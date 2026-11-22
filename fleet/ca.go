@@ -34,9 +34,13 @@ const (
 	signedPrefix      = "/ca/signed/"
 	deployersPrefix   = "/ca/deployers/"
 	deployerOU        = "deploy"
+	maxCSRSize        = 4 << 10
 )
 
-var certnamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*$`)
+var (
+	certnamePattern          = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,252}$`)
+	maxPendingRequests int64 = 1000
+)
 
 type CA struct {
 	api.UnimplementedCertificateAuthorityServer
@@ -54,6 +58,9 @@ func LoadCA(certFile, keyFile string, etcd *clientv3.Client) (*CA, error) {
 }
 
 func (c *CA) RequestCertificate(ctx context.Context, req *api.CertificateRequest) (*api.CertificateResponse, error) {
+	if len(req.Csr) > maxCSRSize {
+		return nil, status.Errorf(codes.InvalidArgument, "certificate request of %d bytes exceeds %d", len(req.Csr), maxCSRSize)
+	}
 	csr, err := parseCSR(req.Csr)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -61,15 +68,27 @@ func (c *CA) RequestCertificate(ctx context.Context, req *api.CertificateRequest
 	name := csr.Subject.CommonName
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csr.Raw})
 
+	requests, err := c.etcd.Get(ctx, requestsPrefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "count pending requests: %v", err)
+	}
+	// Once full, agents with a pending or signed request still get their answer.
+	var create []clientv3.Op
+	if requests.Count < maxPendingRequests {
+		create = append(create, clientv3.OpPut(requestsPrefix+name, string(csrPEM)))
+	}
 	txn, err := c.etcd.Txn(ctx).
 		If(absent(signedPrefix+name), absent(requestsPrefix+name)).
-		Then(clientv3.OpPut(requestsPrefix+name, string(csrPEM))).
+		Then(create...).
 		Else(clientv3.OpGet(signedPrefix+name), clientv3.OpGet(requestsPrefix+name)).
 		Commit()
 	if err != nil {
 		return nil, err
 	}
 	if txn.Succeeded {
+		if len(create) == 0 {
+			return nil, status.Errorf(codes.ResourceExhausted, "%d certificate requests are pending", requests.Count)
+		}
 		log.Printf("certificate request from %s (%s)", name, Fingerprint(csr.Raw))
 		return &api.CertificateResponse{}, nil
 	}
