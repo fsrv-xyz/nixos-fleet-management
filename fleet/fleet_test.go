@@ -549,3 +549,35 @@ func writePEM(t *testing.T, path, typ string, der []byte) {
 		t.Fatal(err)
 	}
 }
+
+func TestOfferedDeployCarriesRevision(t *testing.T) {
+	etcd := startEtcd(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	s := NewServer(nil, etcd, "test", 0)
+	session := &agentSession{desired: make(latest[*api.Deploy], 1)}
+	s.addSession("agent-1", session)
+	expect := func(storePath string, revision int64) {
+		t.Helper()
+		select {
+		case deploy := <-session.desired:
+			if deploy.StorePath != storePath || deploy.Revision != revision {
+				t.Errorf("offered %s at revision %d, want %s at %d", deploy.StorePath, deploy.Revision, storePath, revision)
+			}
+		case <-ctx.Done():
+			t.Fatal("nothing offered")
+		}
+	}
+
+	first, second := storePath('a', "nixos-system-agent-1"), storePath('b', "nixos-system-agent-1")
+	revision, err := SetDesired(ctx, etcd, "agent-1", first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go s.WatchAgents(ctx)
+	expect(first, revision)
+	if revision, err = SetDesired(ctx, etcd, "agent-1", second); err != nil {
+		t.Fatal(err)
+	}
+	expect(second, revision)
+}

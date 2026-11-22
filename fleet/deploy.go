@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,9 @@ import (
 const (
 	progressInterval = time.Second
 	switchUnit       = "fleet-agent-switch"
+	// legacySwitchUnit ran switches of earlier agents and of nixos-rebuild; it is
+	// collected, so the result of a switch in it is unknown.
+	legacySwitchUnit = "nixos-rebuild-switch-to-configuration"
 )
 
 var switchPollInterval = time.Second
@@ -55,15 +59,15 @@ type deployer struct {
 	root    string
 	command func(ctx context.Context, name string, args ...string) *exec.Cmd
 	report  func(*api.DeployProgress)
-	desired latest[string]
+	desired latest[*api.Deploy]
 }
 
 func newDeployer(report func(*api.DeployProgress)) *deployer {
-	return &deployer{root: "/", command: exec.CommandContext, report: report, desired: make(latest[string], 1)}
+	return &deployer{root: "/", command: exec.CommandContext, report: report, desired: make(latest[*api.Deploy], 1)}
 }
 
-func (d *deployer) offer(storePath string) {
-	d.desired.offer(storePath)
+func (d *deployer) offer(target *api.Deploy) {
+	d.desired.offer(target)
 }
 
 // latest is a channel of capacity 1 whose pending value a newer offer replaces,
@@ -89,13 +93,14 @@ func (d *deployer) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case storePath := <-d.desired:
-			d.deploy(ctx, storePath)
+		case target := <-d.desired:
+			d.deploy(ctx, target)
 		}
 	}
 }
 
-func (d *deployer) deploy(ctx context.Context, storePath string) {
+func (d *deployer) deploy(ctx context.Context, target *api.Deploy) {
+	storePath := target.StorePath
 	progress := newProgress(storePath, d.report)
 	// Stopping the agent kills its commands; the restarted agent reports the outcome.
 	fail := func(err error) {
@@ -108,7 +113,12 @@ func (d *deployer) deploy(ctx context.Context, storePath string) {
 		return
 	}
 	// A running switch may still change the active store path, so wait for it first.
-	last, err := d.lastSwitch(ctx)
+	legacy, err := d.awaitUnit(ctx, legacySwitchUnit)
+	if err != nil {
+		fail(err)
+		return
+	}
+	last, err := d.awaitUnit(ctx, switchUnit)
 	if err != nil {
 		fail(err)
 		return
@@ -123,10 +133,19 @@ func (d *deployer) deploy(ctx context.Context, storePath string) {
 		return
 	}
 	// Activation sets /run/current-system before the switch restarts this agent
-	// and finishes, so an active store path whose switch failed is switched again.
-	if generation.StorePath == storePath && !(last.storePath == storePath && last.failed()) {
-		progress.phase(api.DeployProgress_PHASE_DONE, "already active")
-		return
+	// and finishes, so an active store path is not necessarily switched to.
+	if generation.StorePath == storePath {
+		switch {
+		case legacy.waited:
+			// Switching again tells the result the legacy unit did not keep.
+		case last.storePath != storePath || !last.failed():
+			progress.phase(api.DeployProgress_PHASE_DONE, "already active")
+			return
+		case last.revision != 0 && last.revision == target.Revision:
+			// Resent after a reconnect rather than assigned again.
+			progress.phase(api.DeployProgress_PHASE_FAILED, last.failure())
+			return
+		}
 	}
 
 	log.Printf("deploying %s", storePath)
@@ -152,7 +171,7 @@ func (d *deployer) deploy(ctx context.Context, storePath string) {
 	err = d.exec(ctx, progress, "systemd-run",
 		"-E", "LOCALE_ARCHIVE", "-E", "NIXOS_INSTALL_BOOTLOADER=0", "-E", "NIXOS_NO_CHECK",
 		"--no-ask-password", "--quiet", "--service-type=exec",
-		"--unit="+switchUnit, "--description="+storePath, "--wait",
+		"--unit="+switchUnit, fmt.Sprintf("--description=%s %d", storePath, target.Revision), "--wait",
 		storePath+"/bin/switch-to-configuration", "switch")
 	if err != nil {
 		fail(fmt.Errorf("%w, see journalctl -u %s", err, switchUnit))
@@ -162,43 +181,51 @@ func (d *deployer) deploy(ctx context.Context, storePath string) {
 	log.Printf("deployed %s", storePath)
 }
 
-// switchUnitState is how the last switch ended. Without --collect, the unit of a
-// failed switch stays loaded with its store path as description until the next
-// switch resets it, while a successful one is unloaded.
-type switchUnitState struct {
+// unitState is how the last switch in a unit ended. Without --collect, the unit
+// of a failed switch stays loaded, its description naming store path and
+// revision, until the next switch resets it; a successful one is unloaded.
+type unitState struct {
 	storePath, result string
+	revision          int64
+	waited            bool
 }
 
-func (s switchUnitState) failed() bool {
+func (s unitState) failed() bool {
 	return s.result != "success"
 }
 
-// lastSwitch waits for a running switch and returns how the last one ended.
-func (d *deployer) lastSwitch(ctx context.Context) (switchUnitState, error) {
-	for {
-		output, err := d.command(ctx, "systemctl", "show", "--property=ActiveState,Result,Description", switchUnit).Output()
+func (s unitState) failure() string {
+	return fmt.Sprintf("switch failed (%s), see journalctl -u %s", s.result, switchUnit)
+}
+
+// awaitUnit waits for a running switch in unit and returns how it ended.
+func (d *deployer) awaitUnit(ctx context.Context, unit string) (unitState, error) {
+	for waited := false; ; waited = true {
+		output, err := d.command(ctx, "systemctl", "show", "--property=ActiveState,Result,Description", unit).Output()
 		if err != nil {
-			return switchUnitState{}, fmt.Errorf("systemctl show %s: %w", switchUnit, err)
+			return unitState{}, fmt.Errorf("systemctl show %s: %w", unit, err)
 		}
-		var state string
-		var unit switchUnitState
+		state := unitState{waited: waited}
+		var active string
 		for line := range strings.Lines(string(output)) {
 			key, value, _ := strings.Cut(strings.TrimSpace(line), "=")
 			switch key {
 			case "ActiveState":
-				state = value
+				active = value
 			case "Result":
-				unit.result = value
+				state.result = value
 			case "Description":
-				unit.storePath = value
+				var revision string
+				state.storePath, revision, _ = strings.Cut(value, " ")
+				state.revision, _ = strconv.ParseInt(revision, 10, 64)
 			}
 		}
-		if state == "inactive" || state == "failed" {
-			return unit, nil
+		if active == "inactive" || active == "failed" {
+			return state, nil
 		}
 		select {
 		case <-ctx.Done():
-			return switchUnitState{}, ctx.Err()
+			return unitState{}, ctx.Err()
 		case <-time.After(switchPollInterval):
 		}
 	}

@@ -626,8 +626,11 @@ func (*ServerMessage_Deploy) isServerMessage_Body() {}
 
 // Asks the agent to switch to store_path; sent on connect and whenever it changes.
 type Deploy struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	StorePath     string                 `protobuf:"bytes,1,opt,name=store_path,json=storePath,proto3" json:"store_path,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	StorePath string                 `protobuf:"bytes,1,opt,name=store_path,json=storePath,proto3" json:"store_path,omitempty"`
+	// etcd revision of the assignment: the same on a resend after a reconnect, new
+	// when the store path is assigned again. 0 from servers that do not send it.
+	Revision      int64 `protobuf:"varint,2,opt,name=revision,proto3" json:"revision,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -667,6 +670,13 @@ func (x *Deploy) GetStorePath() string {
 		return x.StorePath
 	}
 	return ""
+}
+
+func (x *Deploy) GetRevision() int64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
 }
 
 type RenewCertificateRequest struct {
@@ -900,10 +910,11 @@ const file_fleet_proto_rawDesc = "" +
 	"\rServerMessage\x12\x12\n" +
 	"\x03ack\x18\x01 \x01(\x04H\x00R\x03ack\x12*\n" +
 	"\x06deploy\x18\x02 \x01(\v2\x10.fleet.v1.DeployH\x00R\x06deployB\x06\n" +
-	"\x04body\"'\n" +
+	"\x04body\"C\n" +
 	"\x06Deploy\x12\x1d\n" +
 	"\n" +
-	"store_path\x18\x01 \x01(\tR\tstorePath\"\x19\n" +
+	"store_path\x18\x01 \x01(\tR\tstorePath\x12\x1a\n" +
+	"\brevision\x18\x02 \x01(\x03R\brevision\"\x19\n" +
 	"\x17RenewCertificateRequest\"^\n" +
 	"\rDeployRequest\x12\x1a\n" +
 	"\bcertname\x18\x01 \x01(\tR\bcertname\x12\x1d\n" +

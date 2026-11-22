@@ -80,6 +80,9 @@ message ServerMessage {
 // Asks the agent to switch to store_path; sent on connect and whenever it changes.
 message Deploy {
   string store_path = 1;
+  // etcd revision of the assignment: the same on a resend after a reconnect, new
+  // when the store path is assigned again. 0 from servers that do not send it.
+  int64 revision = 2;
 }
 
 message RenewCertificateRequest {}
