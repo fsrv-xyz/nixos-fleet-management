@@ -68,19 +68,16 @@ func (c *CA) RequestCertificate(ctx context.Context, req *api.CertificateRequest
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	name := csr.Subject.CommonName
-	if len(name) > maxCertnameLength {
-		return nil, status.Errorf(codes.InvalidArgument, "certname of %d characters exceeds %d", len(name), maxCertnameLength)
-	}
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csr.Raw})
 
 	requests, err := c.etcd.Get(ctx, requestsPrefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "count pending requests: %v", err)
 	}
-	// Once full, agents with a pending or signed request still get their answer.
+	// Agents with a pending or signed request still get their answer when no new one may be stored.
 	cmps := []clientv3.Cmp{absent(signedPrefix + name), absent(requestsPrefix + name)}
 	var create []clientv3.Op
-	if requests.Count < maxPendingRequests {
+	if requests.Count < maxPendingRequests && len(name) <= maxCertnameLength {
 		// No request added since counting, so concurrent ones cannot pass the limit.
 		cmps = append(cmps, clientv3.Compare(clientv3.ModRevision(requestsPrefix), "<", requests.Header.Revision+1).WithPrefix())
 		create = append(create, clientv3.OpPut(requestsPrefix+name, string(csrPEM)))
@@ -94,7 +91,10 @@ func (c *CA) RequestCertificate(ctx context.Context, req *api.CertificateRequest
 		return nil, err
 	}
 	if txn.Succeeded {
-		if len(create) == 0 {
+		switch {
+		case len(name) > maxCertnameLength:
+			return nil, status.Errorf(codes.InvalidArgument, "certname of %d characters exceeds %d", len(name), maxCertnameLength)
+		case len(create) == 0:
 			return nil, status.Errorf(codes.ResourceExhausted, "%d certificate requests are pending", requests.Count)
 		}
 		log.Printf("certificate request from %s (%s)", name, Fingerprint(csr.Raw))

@@ -496,6 +496,15 @@ func TestCertificateRequestLimits(t *testing.T) {
 	if err := request(rogueCSR(t, "one-more")); status.Code(err) != codes.ResourceExhausted {
 		t.Errorf("request beyond the limit after concurrent ones: %v", err)
 	}
+
+	long := strings.Repeat("a", 254)
+	csr := rogueCSR(t, long)
+	if _, err := ca.etcd.Put(ctx, requestsPrefix+long, string(csr)); err != nil {
+		t.Fatal(err)
+	}
+	if err := request(csr); err != nil {
+		t.Errorf("request pending from before the name limit: %v", err)
+	}
 }
 
 func rogueCSR(t *testing.T, name string) []byte {

@@ -155,7 +155,7 @@ func (d *deployer) deploy(ctx context.Context, target *api.Deploy) {
 		// Resent after a reconnect rather than assigned again.
 		progress.phase(api.DeployProgress_PHASE_FAILED, last.failure())
 		return
-	case generation.StorePath == storePath && switchedTo && !legacyWaited:
+	case generation.StorePath == storePath && generation.ProfileStorePath == storePath && switchedTo && !legacyWaited:
 		progress.phase(api.DeployProgress_PHASE_DONE, "already active")
 		return
 	}

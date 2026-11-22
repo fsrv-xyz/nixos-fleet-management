@@ -57,8 +57,8 @@ in
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        assertion = builtins.match "[a-z0-9][a-z0-9.-]{0,252}" cfg.certname != null;
-        message = "services.fleet-agent.certname must match [a-z0-9][a-z0-9.-]{0,252}, got \"${cfg.certname}\".";
+        assertion = builtins.match "[a-z0-9][a-z0-9.-]*" cfg.certname != null;
+        message = "services.fleet-agent.certname must match [a-z0-9][a-z0-9.-]*, got \"${cfg.certname}\".";
       }
     ];
 
