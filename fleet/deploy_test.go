@@ -80,8 +80,11 @@ func TestDeployer(t *testing.T) {
 	runningUnit := func(path string, revision int) string {
 		return unit("active", "running", "success", fmt.Sprint(path, " ", revision))
 	}
+	// switchEnd is when switches of succeeded units end, after any link the test sets.
+	switchEnd := time.Now().Add(time.Hour)
 	succeeded := func(path string, revision int) string {
-		return unit("active", "exited", "success", fmt.Sprint(path, " ", revision))
+		return unit("active", "exited", "success", fmt.Sprint(path, " ", revision)) +
+			`ExecMainExitTimestamp=` + switchEnd.UTC().Format(systemdTimestamp) + `\n`
 	}
 	failed := func(path string, revision int) string {
 		return unit("failed", "failed", "exit-code", fmt.Sprint(path, " ", revision))
@@ -122,8 +125,8 @@ func TestDeployer(t *testing.T) {
 	switchPollInterval = time.Millisecond
 	t.Cleanup(func() { switchPollInterval = time.Second })
 	const (
-		showLegacy  = "systemctl show --property=LoadState,ActiveState,SubState,Result,Description nixos-rebuild-switch-to-configuration"
-		show        = "systemctl show --property=LoadState,ActiveState,SubState,Result,Description fleet-agent-switch"
+		showLegacy  = "systemctl show --timestamp=us+utc --property=LoadState,ActiveState,SubState,Result,Description,ExecMainExitTimestamp nixos-rebuild-switch-to-configuration"
+		show        = "systemctl show --timestamp=us+utc --property=LoadState,ActiveState,SubState,Result,Description,ExecMainExitTimestamp fleet-agent-switch"
 		stopUnit    = "systemctl stop fleet-agent-switch"
 		resetFailed = "systemctl reset-failed fleet-agent-switch"
 	)
@@ -305,7 +308,7 @@ func TestDeployer(t *testing.T) {
 	}{
 		"booted, nothing switched":        {"", notLoaded, false},
 		"switched to":                     {"", succeeded(running, 1), false},
-		"switched to, unit removed":       {record(running, 1, "success"), notLoaded, false},
+		"success recorded, unit removed":  {record(running, 1, "success"), notLoaded, true},
 		"another switch failed after it":  {"", failed(next, 2), true},
 		"another switch started after it": {record(next, 2, "starting"), notLoaded, true},
 	} {
@@ -329,6 +332,11 @@ func TestDeployer(t *testing.T) {
 	setLinkTime(filepath.Join(switchedRoot, "run/current-system"), boot.Add(time.Minute))
 	if r = deploy(ctx, switchedRoot, polls(notLoaded, succeeded(running, 3)), at(running, 3)); !slices.Equal(r.phases, switched) {
 		t.Errorf("active, booted but switched since: phases %v, want a switch", r.phases)
+	}
+	// Switched again after the agent's switch, the store path is switched again too.
+	setLinkTime(filepath.Join(switchedRoot, "run/current-system"), switchEnd.Add(time.Minute))
+	if r = deploy(ctx, switchedRoot, polls(succeeded(running, 1), succeeded(running, 3)), at(running, 3)); !slices.Equal(r.phases, switched) {
+		t.Errorf("active, switched again after the agent: phases %v, want a switch", r.phases)
 	}
 	// Interrupted after setting the profile to another store path, the active one is switched again.
 	if r = deploy(ctx, newRoot(running, running, next), polls(succeeded(running, 1), succeeded(running, 3)), at(running, 3)); !slices.Equal(r.phases, switched) {

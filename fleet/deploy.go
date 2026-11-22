@@ -30,6 +30,8 @@ const (
 	// starts, when it fails to start, and once the next switch removed the unit.
 	// In /run, it lasts until reboot like the unit.
 	switchRecordFile = "run/fleet-agent-switch"
+	// systemdTimestamp is the format of systemctl --timestamp=us+utc.
+	systemdTimestamp = "Mon 2006-01-02 15:04:05.000000 MST"
 )
 
 var switchPollInterval = time.Second
@@ -147,9 +149,17 @@ func (d *deployer) deploy(ctx context.Context, target *api.Deploy) {
 		return
 	}
 	// Activation sets /run/current-system before the switch finishes, so the active
-	// store path counts only once its switch succeeded, or as booted with no switch since.
-	switchedTo := last.storePath == storePath && last.result == "success" ||
-		last == (switchRecord{}) && generation.BootedStorePath == storePath && !d.switchedSinceBoot()
+	// store path counts only once its switch succeeded, or as booted, and with no
+	// switch since: at boot, activation links /run/current-system before
+	// prepare-root links /run/booted-system.
+	var switchedTo bool
+	switch {
+	case last.storePath == storePath && last.result == "success":
+		switchedTo = d.currentSystemLinkedBy(last.exited)
+	case last == (switchRecord{}) && generation.BootedStorePath == storePath:
+		booted, err := os.Lstat(filepath.Join(d.root, "run/booted-system"))
+		switchedTo = err == nil && d.currentSystemLinkedBy(booted.ModTime())
+	}
 	switch {
 	case last.storePath == storePath && last.failed() && last.revision != 0 && last.revision == target.Revision:
 		// Resent after a reconnect rather than assigned again.
@@ -211,7 +221,7 @@ func (d *deployer) deploy(ctx context.Context, target *api.Deploy) {
 		fail(err)
 		return
 	}
-	if unit != (switchRecord{storePath: storePath, revision: target.Revision, result: "success", loaded: true}) {
+	if unit.storePath != storePath || unit.revision != target.Revision || unit.result != "success" {
 		if !unit.failed() {
 			unit = switchRecord{storePath: storePath, revision: target.Revision, result: "stopped"}
 			if err := d.writeRecord(unit); err != nil {
@@ -225,16 +235,12 @@ func (d *deployer) deploy(ctx context.Context, target *api.Deploy) {
 	log.Printf("deployed %s", storePath)
 }
 
-// switchedSinceBoot tells whether /run/current-system was replaced after boot,
-// where activation links it before stage 2 links /run/booted-system. Unknown
-// counts as switched, which only costs another switch.
-func (d *deployer) switchedSinceBoot() bool {
+// currentSystemLinkedBy tells whether /run/current-system was last linked no
+// later than at, so no switch replaced it since. Unknown counts as replaced,
+// which only costs another switch.
+func (d *deployer) currentSystemLinkedBy(at time.Time) bool {
 	current, err := os.Lstat(filepath.Join(d.root, "run/current-system"))
-	if err != nil {
-		return true
-	}
-	booted, err := os.Lstat(filepath.Join(d.root, "run/booted-system"))
-	return err != nil || current.ModTime().After(booted.ModTime())
+	return err == nil && !current.ModTime().After(at)
 }
 
 // switchRecord is a switch and how it ended. With RemainAfterExit and without
@@ -247,6 +253,8 @@ type switchRecord struct {
 	// such as exit-code.
 	result string
 	loaded bool
+	// exited is when the unit of a successful switch ended; records do not keep it.
+	exited time.Time
 }
 
 func (r switchRecord) failed() bool {
@@ -290,7 +298,8 @@ func (d *deployer) writeRecord(record switchRecord) error {
 // whether it had to wait.
 func (d *deployer) awaitUnit(ctx context.Context, unit string) (switchRecord, bool, error) {
 	for waited := false; ; waited = true {
-		output, err := d.command(ctx, "systemctl", "show", "--property=LoadState,ActiveState,SubState,Result,Description", unit).Output()
+		output, err := d.command(ctx, "systemctl", "show", "--timestamp=us+utc",
+			"--property=LoadState,ActiveState,SubState,Result,Description,ExecMainExitTimestamp", unit).Output()
 		if err != nil {
 			return switchRecord{}, waited, fmt.Errorf("systemctl show %s: %w", unit, err)
 		}
@@ -309,6 +318,8 @@ func (d *deployer) awaitUnit(ctx context.Context, unit string) (switchRecord, bo
 			return record, waited, nil
 		case state == "active" && properties["SubState"] == "exited":
 			record.result = "success"
+			// Unparsable, it stays zero and the switch does not count.
+			record.exited, _ = time.Parse(systemdTimestamp, properties["ExecMainExitTimestamp"])
 			return record, waited, nil
 		case state == "inactive":
 			return switchRecord{}, waited, nil
