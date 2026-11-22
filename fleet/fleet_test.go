@@ -445,6 +445,9 @@ func TestCertificateRequestLimits(t *testing.T) {
 	if err := request(rogueCSR(t, strings.Repeat("a", 254))); status.Code(err) != codes.InvalidArgument {
 		t.Errorf("overlong name: %v", err)
 	}
+	if err := validateDeploy(strings.Repeat("a", 254), storePath('a', "x")); err != nil {
+		t.Errorf("name enrolled before the limit: %v", err)
+	}
 	node1 := rogueCSR(t, "node1")
 	if err := request(node1); err != nil {
 		t.Fatal(err)
@@ -591,4 +594,12 @@ func TestOfferedDeployCarriesRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	expect(second, revision)
+
+	// The initial read in Connect may come after the watch offered a newer assignment.
+	session.offer(&api.Deploy{StorePath: first, Revision: revision - 1})
+	select {
+	case deploy := <-session.desired:
+		t.Errorf("offered %s at older revision %d", deploy.StorePath, deploy.Revision)
+	default:
+	}
 }
