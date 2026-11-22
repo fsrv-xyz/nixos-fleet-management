@@ -472,15 +472,26 @@ func TestCertificateRequestLimits(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range 20 {
 		csr := rogueCSR(t, fmt.Sprintf("concurrent%d", i))
-		wg.Go(func() { request(csr) })
+		wg.Go(func() {
+			err := request(csr)
+			for status.Code(err) == codes.Aborted {
+				err = request(csr)
+			}
+			if err != nil && status.Code(err) != codes.ResourceExhausted {
+				t.Errorf("concurrent request: %v", err)
+			}
+		})
 	}
 	wg.Wait()
 	var pending bytes.Buffer
 	if err := ca.List(ctx, &pending); err != nil {
 		t.Fatal(err)
 	}
-	if n := strings.Count(pending.String(), "\n"); n > 5 {
-		t.Errorf("%d pending requests after concurrent ones, limit 5", n)
+	if n := strings.Count(pending.String(), "\n"); n != 5 {
+		t.Errorf("%d pending requests after concurrent ones, want the limit of 5", n)
+	}
+	if err := request(rogueCSR(t, "one-more")); status.Code(err) != codes.ResourceExhausted {
+		t.Errorf("request beyond the limit after concurrent ones: %v", err)
 	}
 }
 
