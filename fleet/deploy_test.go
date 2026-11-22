@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"nixos-fleet-management/api"
 )
 
@@ -21,8 +23,16 @@ func storePath(hash byte, name string) string {
 
 func TestDeployer(t *testing.T) {
 	running, next := storePath('a', "nixos-system-host"), storePath('b', "nixos-system-host")
-	// newRoot has running and next built and links the current and booted system
-	// and the system profile.
+	boot := time.Now().Add(-time.Hour)
+	setLinkTime := func(link string, at time.Time) {
+		t.Helper()
+		times := []unix.Timeval{unix.NsecToTimeval(at.UnixNano()), unix.NsecToTimeval(at.UnixNano())}
+		if err := unix.Lutimes(link, times); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// newRoot has running and next built and links the current and booted system,
+	// as linked at boot, and the system profile.
 	newRoot := func(current, booted, profile string) string {
 		root := t.TempDir()
 		for _, path := range []string{running, next} {
@@ -48,6 +58,8 @@ func TestDeployer(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		setLinkTime(filepath.Join(root, "run/current-system"), boot)
+		setLinkTime(filepath.Join(root, "run/booted-system"), boot.Add(time.Second))
 		return root
 	}
 	root := newRoot(running, running, running)
@@ -311,6 +323,12 @@ func TestDeployer(t *testing.T) {
 	// Switched to since boot without the agent, the active store path is switched again.
 	if r = deploy(ctx, newRoot(running, next, running), polls(notLoaded, succeeded(running, 3)), at(running, 3)); !slices.Equal(r.phases, switched) {
 		t.Errorf("active, switched to since boot: phases %v, want a switch", r.phases)
+	}
+	// Switched again since boot, as a manual switch that failed may have, the booted store path is switched again.
+	switchedRoot := newRoot(running, running, running)
+	setLinkTime(filepath.Join(switchedRoot, "run/current-system"), boot.Add(time.Minute))
+	if r = deploy(ctx, switchedRoot, polls(notLoaded, succeeded(running, 3)), at(running, 3)); !slices.Equal(r.phases, switched) {
+		t.Errorf("active, booted but switched since: phases %v, want a switch", r.phases)
 	}
 	// Interrupted after setting the profile to another store path, the active one is switched again.
 	if r = deploy(ctx, newRoot(running, running, next), polls(succeeded(running, 1), succeeded(running, 3)), at(running, 3)); !slices.Equal(r.phases, switched) {

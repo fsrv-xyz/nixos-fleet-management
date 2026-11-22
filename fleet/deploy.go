@@ -149,7 +149,7 @@ func (d *deployer) deploy(ctx context.Context, target *api.Deploy) {
 	// Activation sets /run/current-system before the switch finishes, so the active
 	// store path counts only once its switch succeeded, or as booted with no switch since.
 	switchedTo := last.storePath == storePath && last.result == "success" ||
-		last == (switchRecord{}) && generation.BootedStorePath == storePath
+		last == (switchRecord{}) && generation.BootedStorePath == storePath && !d.switchedSinceBoot()
 	switch {
 	case last.storePath == storePath && last.failed() && last.revision != 0 && last.revision == target.Revision:
 		// Resent after a reconnect rather than assigned again.
@@ -223,6 +223,18 @@ func (d *deployer) deploy(ctx context.Context, target *api.Deploy) {
 	}
 	progress.phase(api.DeployProgress_PHASE_DONE, "")
 	log.Printf("deployed %s", storePath)
+}
+
+// switchedSinceBoot tells whether /run/current-system was replaced after boot,
+// where activation links it before stage 2 links /run/booted-system. Unknown
+// counts as switched, which only costs another switch.
+func (d *deployer) switchedSinceBoot() bool {
+	current, err := os.Lstat(filepath.Join(d.root, "run/current-system"))
+	if err != nil {
+		return true
+	}
+	booted, err := os.Lstat(filepath.Join(d.root, "run/booted-system"))
+	return err != nil || current.ModTime().After(booted.ModTime())
 }
 
 // switchRecord is a switch and how it ended. With RemainAfterExit and without
