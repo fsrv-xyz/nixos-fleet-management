@@ -57,6 +57,9 @@ type deployer struct {
 	command func(ctx context.Context, name string, args ...string) *exec.Cmd
 	report  func(*api.DeployProgress)
 	desired latest[string]
+	// failed is the store path whose last switch failed; offering it again retries
+	// the switch although it is active.
+	failed string
 }
 
 func newDeployer(report func(*api.DeployProgress)) *deployer {
@@ -116,10 +119,11 @@ func (d *deployer) deploy(ctx context.Context, storePath string) {
 	case generation == nil:
 		progress.phase(api.DeployProgress_PHASE_FAILED, "not a NixOS host")
 		return
-	case generation.StorePath == storePath:
+	case generation.StorePath == storePath && storePath != d.failed:
 		// Activation sets /run/current-system before the switch restarts this
 		// agent and finishes, so only the switch unit knows whether it succeeded.
 		if err := d.switchResult(ctx); err != nil {
+			d.failed = storePath
 			fail(err)
 			return
 		}
@@ -141,16 +145,21 @@ func (d *deployer) deploy(ctx context.Context, storePath string) {
 	// A separate unit, as in nixos-rebuild: the switch may restart this agent and
 	// must finish anyway. Its output goes to the journal of that unit. Without
 	// --collect, a failed unit stays loaded, so a restarted agent can read its result.
+	if err := d.switchResult(ctx); err != nil && ctx.Err() == nil {
+		log.Printf("previous %v", err)
+	}
 	err = d.exec(ctx, progress, "systemd-run",
 		"-E", "LOCALE_ARCHIVE", "-E", "NIXOS_INSTALL_BOOTLOADER=0", "-E", "NIXOS_NO_CHECK",
 		"--no-ask-password", "--quiet", "--service-type=exec",
 		"--unit="+switchUnit, "--wait",
 		storePath+"/bin/switch-to-configuration", "switch")
 	if err != nil {
+		d.failed = storePath
 		fail(err)
 		d.resetSwitch(ctx)
 		return
 	}
+	d.failed = ""
 	progress.phase(api.DeployProgress_PHASE_DONE, "")
 	log.Printf("deployed %s", storePath)
 }

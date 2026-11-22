@@ -12,6 +12,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"net"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -452,6 +454,21 @@ func TestCertificateRequestLimits(t *testing.T) {
 	}
 	if err := request(node1); err != nil {
 		t.Errorf("pending agent asking again at the limit: %v", err)
+	}
+
+	maxPendingRequests = 5
+	var wg sync.WaitGroup
+	for i := range 20 {
+		csr := rogueCSR(t, fmt.Sprintf("concurrent%d", i))
+		wg.Go(func() { request(csr) })
+	}
+	wg.Wait()
+	var pending bytes.Buffer
+	if err := ca.List(ctx, &pending); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(pending.String(), "\n"); n > 5 {
+		t.Errorf("%d pending requests after concurrent ones, limit 5", n)
 	}
 }
 

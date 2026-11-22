@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -40,7 +41,9 @@ func TestDeployer(t *testing.T) {
 	}
 	var stopAt string
 	var stopAgent context.CancelFunc
-	deploy := func(ctx context.Context, root, path string, scripts map[string]string) result {
+	const notLoaded = `printf 'ActiveState=inactive\nResult=success\n'`
+	// deploy offers paths one after another to the same deployer.
+	deploy := func(ctx context.Context, root string, scripts map[string]string, paths ...string) result {
 		var r result
 		d := newDeployer(func(p *api.DeployProgress) {
 			r.phases = append(r.phases, p.Phase.String())
@@ -52,9 +55,15 @@ func TestDeployer(t *testing.T) {
 			if name == stopAt {
 				stopAgent()
 			}
-			return exec.CommandContext(ctx, "sh", append([]string{"-c", scripts[name], name}, args...)...)
+			script, ok := scripts[name]
+			if !ok && name == "systemctl" {
+				script = notLoaded
+			}
+			return exec.CommandContext(ctx, "sh", append([]string{"-c", script, name}, args...)...)
 		}
-		d.deploy(ctx, path)
+		for _, path := range paths {
+			d.deploy(ctx, path)
+		}
 		return r
 	}
 	ctx := context.Background()
@@ -64,16 +73,31 @@ func TestDeployer(t *testing.T) {
 		show        = "systemctl show --property=ActiveState,Result nixos-rebuild-switch-to-configuration"
 		resetFailed = "systemctl reset-failed nixos-rebuild-switch-to-configuration"
 	)
-
-	r := deploy(ctx, root, next, map[string]string{"nix-store": "echo copying path 1; echo copying path 2"})
-	wantCommands := []string{
-		"nix-store --realise " + next,
-		"nix-env --profile " + filepath.Join(root, "nix/var/nix/profiles/system") + " --set " + next,
-		"systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER=0 -E NIXOS_NO_CHECK --no-ask-password --quiet" +
-			" --service-type=exec --unit=nixos-rebuild-switch-to-configuration --wait " + next + "/bin/switch-to-configuration switch",
+	realise := func(path string) string { return "nix-store --realise " + path }
+	setProfile := func(path string) string {
+		return "nix-env --profile " + filepath.Join(root, "nix/var/nix/profiles/system") + " --set " + path
 	}
-	if !slices.Equal(r.commands, wantCommands) {
-		t.Errorf("commands:\n%s\nwant:\n%s", strings.Join(r.commands, "\n"), strings.Join(wantCommands, "\n"))
+	switchTo := func(path string) string {
+		return "systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER=0 -E NIXOS_NO_CHECK --no-ask-password --quiet" +
+			" --service-type=exec --unit=nixos-rebuild-switch-to-configuration --wait " + path + "/bin/switch-to-configuration switch"
+	}
+	// polls answers the n-th systemctl show with the n-th of states, then with the last.
+	polls := func(states ...string) string {
+		counter := filepath.Join(t.TempDir(), "polls")
+		script := `[ "$1" = show ] || exit 0; echo >> ` + counter + `; case $(wc -l < ` + counter + `) in`
+		for i, state := range states {
+			pattern := strconv.Itoa(i + 1)
+			if i == len(states)-1 {
+				pattern = "*"
+			}
+			script += ` ` + pattern + `) printf 'ActiveState=` + strings.Replace(state, "/", `\nResult=`, 1) + `\n';;`
+		}
+		return script + ` esac`
+	}
+
+	r := deploy(ctx, root, map[string]string{"nix-store": "echo copying path 1; echo copying path 2"}, next)
+	if want := []string{realise(next), setProfile(next), show, switchTo(next)}; !slices.Equal(r.commands, want) {
+		t.Errorf("commands:\n%s\nwant:\n%s", strings.Join(r.commands, "\n"), strings.Join(want, "\n"))
 	}
 	if want := []string{"PHASE_REALISING", "PHASE_ACTIVATING", "PHASE_DONE"}; !slices.Equal(r.phases, want) {
 		t.Errorf("phases %v, want %v", r.phases, want)
@@ -82,7 +106,7 @@ func TestDeployer(t *testing.T) {
 		t.Errorf("progress for %s, want %s", r.last.StorePath, next)
 	}
 
-	r = deploy(ctx, root, next, map[string]string{"nix-store": "echo copying path 1; echo 'error: cannot substitute' >&2; exit 1"})
+	r = deploy(ctx, root, map[string]string{"nix-store": "echo copying path 1; echo 'error: cannot substitute' >&2; exit 1"}, next)
 	if want := []string{"PHASE_REALISING", "PHASE_FAILED"}; !slices.Equal(r.phases, want) || !strings.Contains(r.last.Message, "error: cannot substitute") {
 		t.Errorf("failed realise: phases %v, message %q", r.phases, r.last.Message)
 	}
@@ -90,33 +114,42 @@ func TestDeployer(t *testing.T) {
 		t.Errorf("ran %v after the failed realise", r.commands[1:])
 	}
 
-	r = deploy(ctx, root, next, map[string]string{"systemd-run": "exit 4"})
+	r = deploy(ctx, root, map[string]string{"systemd-run": "exit 4"}, next)
 	if want := []string{"PHASE_REALISING", "PHASE_ACTIVATING", "PHASE_FAILED"}; !slices.Equal(r.phases, want) || r.commands[len(r.commands)-1] != resetFailed {
 		t.Errorf("failed switch: phases %v, commands %v", r.phases, r.commands)
+	}
+
+	// A switch the agent did not see end is settled before the next one, without blaming it.
+	r = deploy(ctx, root, map[string]string{"systemctl": polls("active/success", "failed/exit-code", "inactive/success")}, next)
+	if want := []string{realise(next), setProfile(next), show, show, resetFailed, switchTo(next)}; !slices.Equal(r.commands, want) {
+		t.Errorf("previous switch: commands:\n%s\nwant:\n%s", strings.Join(r.commands, "\n"), strings.Join(want, "\n"))
+	}
+	if want := []string{"PHASE_REALISING", "PHASE_ACTIVATING", "PHASE_DONE"}; !slices.Equal(r.phases, want) {
+		t.Errorf("previous switch: phases %v", r.phases)
 	}
 
 	stopped, stop := context.WithCancel(ctx)
 	defer stop()
 	stopAt, stopAgent = "systemd-run", stop
-	r = deploy(stopped, root, next, nil)
+	r = deploy(stopped, root, nil, next)
 	stopAt = ""
 	if want := []string{"PHASE_REALISING", "PHASE_ACTIVATING"}; !slices.Equal(r.phases, want) {
 		t.Errorf("stopped agent: phases %v", r.phases)
 	}
 
-	r = deploy(ctx, root, running, map[string]string{"systemctl": `printf 'ActiveState=inactive\nResult=success\n'`})
+	r = deploy(ctx, root, nil, running)
 	if !slices.Equal(r.commands, []string{show}) || !slices.Equal(r.phases, []string{"PHASE_DONE"}) || r.last.Message != "already active" {
 		t.Errorf("already active: commands %v, phases %v, message %q", r.commands, r.phases, r.last.Message)
 	}
 
-	// The agent restarted by the switch it started finds the switch still running, which then fails.
-	polled := filepath.Join(t.TempDir(), "polled")
-	r = deploy(ctx, root, running, map[string]string{"systemctl": `
-		[ "$1" = show ] || exit 0
-		if [ -e ` + polled + ` ]; then printf 'ActiveState=failed\nResult=exit-code\n'
-		else touch ` + polled + `; printf 'ActiveState=active\nResult=success\n'; fi`})
-	if !slices.Equal(r.commands, []string{show, show, resetFailed}) || !slices.Equal(r.phases, []string{"PHASE_FAILED"}) || !strings.Contains(r.last.Message, "exit-code") {
-		t.Errorf("switch failing after agent restart: commands %v, phases %v, message %q", r.commands, r.phases, r.last.Message)
+	// The agent restarted by its switch finds it still running, sees it fail, and
+	// switches again when offered the same path once more.
+	r = deploy(ctx, root, map[string]string{"systemctl": polls("active/success", "failed/exit-code", "inactive/success")}, running, running)
+	if want := []string{show, show, resetFailed, realise(running), setProfile(running), show, switchTo(running)}; !slices.Equal(r.commands, want) {
+		t.Errorf("switch failing after agent restart: commands:\n%s\nwant:\n%s", strings.Join(r.commands, "\n"), strings.Join(want, "\n"))
+	}
+	if want := []string{"PHASE_FAILED", "PHASE_REALISING", "PHASE_ACTIVATING", "PHASE_DONE"}; !slices.Equal(r.phases, want) {
+		t.Errorf("switch failing after agent restart: phases %v", r.phases)
 	}
 
 	for _, tc := range []struct {
@@ -125,7 +158,7 @@ func TestDeployer(t *testing.T) {
 		{"invalid store path", root, "/nix/store/x; reboot", "invalid store path"},
 		{"not NixOS", t.TempDir(), next, "not a NixOS host"},
 	} {
-		r := deploy(ctx, tc.root, tc.path, nil)
+		r := deploy(ctx, tc.root, nil, tc.path)
 		if len(r.commands) != 0 || len(r.phases) != 1 || !strings.Contains(r.last.Message, tc.message) {
 			t.Errorf("%s: commands %v, phases %v, message %q", tc.name, r.commands, r.phases, r.last.Message)
 		}

@@ -73,12 +73,15 @@ func (c *CA) RequestCertificate(ctx context.Context, req *api.CertificateRequest
 		return nil, status.Errorf(codes.Unavailable, "count pending requests: %v", err)
 	}
 	// Once full, agents with a pending or signed request still get their answer.
+	cmps := []clientv3.Cmp{absent(signedPrefix + name), absent(requestsPrefix + name)}
 	var create []clientv3.Op
 	if requests.Count < maxPendingRequests {
+		// No request added since counting, so concurrent ones cannot pass the limit.
+		cmps = append(cmps, clientv3.Compare(clientv3.ModRevision(requestsPrefix), "<", requests.Header.Revision+1).WithPrefix())
 		create = append(create, clientv3.OpPut(requestsPrefix+name, string(csrPEM)))
 	}
 	txn, err := c.etcd.Txn(ctx).
-		If(absent(signedPrefix+name), absent(requestsPrefix+name)).
+		If(cmps...).
 		Then(create...).
 		Else(clientv3.OpGet(signedPrefix+name), clientv3.OpGet(requestsPrefix+name)).
 		Commit()
@@ -103,7 +106,11 @@ func (c *CA) RequestCertificate(ctx context.Context, req *api.CertificateRequest
 		}
 		return &api.CertificateResponse{Certificate: kvs[0].Value}, nil
 	}
-	pending, err := parseCSR(txn.Responses[1].GetResponseRange().Kvs[0].Value)
+	kvs := txn.Responses[1].GetResponseRange().Kvs
+	if len(kvs) == 0 {
+		return nil, status.Error(codes.Aborted, "another certificate request came first, retry")
+	}
+	pending, err := parseCSR(kvs[0].Value)
 	if err != nil {
 		return nil, err
 	}
