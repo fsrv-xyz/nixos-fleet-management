@@ -211,7 +211,10 @@ func (d *deployer) deploy(ctx context.Context, target *api.Deploy) {
 		fail(err)
 		return
 	}
-	if unit.failed() {
+	if unit != (switchRecord{storePath: storePath, revision: target.Revision, result: "success", loaded: true}) {
+		if !unit.failed() {
+			unit.result = "stopped"
+		}
 		fail(errors.New(unit.failure()))
 		return
 	}
