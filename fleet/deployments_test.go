@@ -151,15 +151,19 @@ func TestDeploy(t *testing.T) {
 	}
 
 	type result struct {
-		phases []string
-		err    error
+		phases    []string
+		revisions []int64
+		err       error
 	}
 	deploy := func(certFile, keyFile, certname, path string, wait bool, timeout time.Duration) result {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		var r result
 		r.err = RequestDeploy(ctx, []string{lis.Addr().String()}, filepath.Join(dir, "ca.crt"), certFile, keyFile, certname, path, wait,
-			func(p *api.DeployProgress) { r.phases = append(r.phases, p.Phase.String()) })
+			func(p *api.DeployProgress) {
+				r.phases = append(r.phases, p.Phase.String())
+				r.revisions = append(r.revisions, p.Revision)
+			})
 		return r
 	}
 	ciDeploy := func(path string, wait bool, timeout time.Duration) <-chan result {
@@ -263,9 +267,10 @@ func TestDeploy(t *testing.T) {
 		}
 	}
 	reportRevision(first, earlier, api.DeployProgress_PHASE_FAILED, "earlier switch failed")
-	reportRevision(first, revision(), api.DeployProgress_PHASE_DONE, "")
-	if r := <-done; r.err != nil || !slices.Equal(r.phases, []string{"PHASE_DONE"}) {
-		t.Errorf("assigned again: %v, phases %v", r.err, r.phases)
+	current := revision()
+	reportRevision(first, current, api.DeployProgress_PHASE_DONE, "")
+	if r := <-done; r.err != nil || !slices.Equal(r.phases, []string{"PHASE_DONE"}) || !slices.Equal(r.revisions, []int64{current}) {
+		t.Errorf("assigned again: %v, phases %v, revisions %v", r.err, r.phases, r.revisions)
 	}
 
 	if r := <-ciDeploy(second, true, 2*time.Second); status.Code(r.err) != codes.DeadlineExceeded {

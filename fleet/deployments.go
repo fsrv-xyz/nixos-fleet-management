@@ -75,7 +75,7 @@ func (d *Deployments) follow(ctx context.Context, stream grpc.ServerStreamingSer
 				continue
 			}
 			phase := api.DeployProgress_Phase(api.DeployProgress_Phase_value[deploy.Phase])
-			if err := stream.Send(&api.DeployProgress{StorePath: storePath, Phase: phase, Message: deploy.Message}); err != nil {
+			if err := stream.Send(&api.DeployProgress{StorePath: storePath, Revision: deploy.Revision, Phase: phase, Message: deploy.Message}); err != nil {
 				return err
 			}
 			if phase == api.DeployProgress_PHASE_DONE || phase == api.DeployProgress_PHASE_FAILED {
