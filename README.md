@@ -51,8 +51,10 @@ An agent without a certificate requests one and waits until it is signed:
 ```console
 # fleet-ca list
 node1 SHA256:4C0AE12A…
-# fleet-ca sign node1
+# fleet-ca sign node1 SHA256:4C0AE12A…
 ```
+
+`sign` takes a line of `list` after the agent's log confirmed the fingerprint.
 
 `fleet-ca reject` deletes pending requests; beyond 1000 of them, new ones are refused.
 
@@ -100,7 +102,7 @@ $ make generate-certificates
 $ go run ./cmd/fleet-server
 $ echo '{"certname": "dev"}' > agent.json
 $ go run ./cmd/fleet-agent -config agent.json
-$ go run ./cmd/fleet-server ca sign dev
+$ go run ./cmd/fleet-server ca sign $(go run ./cmd/fleet-server ca list | grep "^dev ")
 ```
 
 All state lives in etcd below `etcdPrefix` (default `/fleet`).
