@@ -85,10 +85,10 @@ On a server, the module's `fleet-deploy` wrapper assigns through etcd directly.
 
 The agent fetches the closure, sets the system profile and runs
 `switch-to-configuration switch` in the unit `fleet-agent-switch`, whose journal
-holds the switch output. The agent records the last switch in
-`/run/fleet-agent-switch` and keeps a failed unit loaded until the next one, so
-it reports the result after a reconnect; assigned again, a store path whose
-switch failed is switched again even though it is active.
+holds the switch output and stays loaded until the next switch, so the agent
+reports its result after a reconnect. An active store path counts as deployed
+only after a successful switch to it, or when booted with no switch since;
+assigned again, a store path whose switch failed is switched again.
 
 ## Development
 

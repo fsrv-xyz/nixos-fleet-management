@@ -2,7 +2,6 @@ package fleet
 
 import (
 	"bufio"
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -27,7 +26,9 @@ const (
 	// legacySwitchUnit ran switches of earlier agents and of nixos-rebuild; it is
 	// collected, so the result of a switch in it is unknown.
 	legacySwitchUnit = "nixos-rebuild-switch-to-configuration"
-	// switchRecordFile holds the last switch; in /run, it lasts until reboot like a failed unit.
+	// switchRecordFile holds the last switch while its unit does not: before it
+	// starts, when it fails to start, and once the next switch removed the unit.
+	// In /run, it lasts until reboot like the unit.
 	switchRecordFile = "run/fleet-agent-switch"
 )
 
@@ -129,10 +130,12 @@ func (d *deployer) deploy(ctx context.Context, target *api.Deploy) {
 		fail(err)
 		return
 	}
-	last, err := d.lastSwitch(unit)
-	if err != nil {
-		fail(err)
-		return
+	last := unit
+	if !unit.loaded {
+		if last, err = d.readRecord(); err != nil {
+			fail(err)
+			return
+		}
 	}
 	generation, err := nixosGeneration(d.root)
 	switch {
@@ -143,15 +146,16 @@ func (d *deployer) deploy(ctx context.Context, target *api.Deploy) {
 		progress.phase(api.DeployProgress_PHASE_FAILED, "not a NixOS host")
 		return
 	}
-	failedBefore := last.storePath == storePath && last.failed()
+	// Activation sets /run/current-system before the switch finishes, so the active
+	// store path counts only once its switch succeeded, or as booted with no switch since.
+	switchedTo := last.storePath == storePath && last.result == "success" ||
+		last == (switchRecord{}) && generation.BootedStorePath == storePath
 	switch {
-	case failedBefore && last.revision != 0 && last.revision == target.Revision:
+	case last.storePath == storePath && last.failed() && last.revision != 0 && last.revision == target.Revision:
 		// Resent after a reconnect rather than assigned again.
 		progress.phase(api.DeployProgress_PHASE_FAILED, last.failure())
 		return
-	// Activation sets /run/current-system before the switch restarts this agent
-	// and finishes, and the legacy unit keeps no result.
-	case generation.StorePath == storePath && !failedBefore && !legacyWaited:
+	case generation.StorePath == storePath && switchedTo && !legacyWaited:
 		progress.phase(api.DeployProgress_PHASE_DONE, "already active")
 		return
 	}
@@ -167,37 +171,38 @@ func (d *deployer) deploy(ctx context.Context, target *api.Deploy) {
 		fail(err)
 		return
 	}
-	if unit.failed() {
-		log.Printf("previous switch to %s failed (%s)", unit.storePath, unit.result)
-		// The record keeps the failure that the reset erases from the unit.
+	if unit.loaded {
+		// The record keeps the result that removing the unit erases.
 		if err := d.writeRecord(unit); err != nil {
 			fail(err)
 			return
 		}
-		if err := d.exec(ctx, progress, "systemctl", "reset-failed", switchUnit); err != nil {
+		remove := "stop"
+		if unit.failed() {
+			remove = "reset-failed"
+		}
+		if err := d.exec(ctx, progress, "systemctl", remove, switchUnit); err != nil {
 			fail(err)
 			return
 		}
+	}
+	if err := d.writeRecord(switchRecord{storePath: storePath, revision: target.Revision, result: "starting"}); err != nil {
+		fail(err)
+		return
 	}
 	// A separate unit, as in nixos-rebuild: the switch may restart this agent and
 	// must finish anyway. Its output goes to the journal of that unit.
 	err = d.exec(ctx, progress, "systemd-run",
 		"-E", "LOCALE_ARCHIVE", "-E", "NIXOS_INSTALL_BOOTLOADER=0", "-E", "NIXOS_NO_CHECK",
-		"--no-ask-password", "--quiet", "--service-type=exec",
+		"--no-ask-password", "--quiet", "--service-type=exec", "--property=RemainAfterExit=yes",
 		"--unit="+switchUnit, fmt.Sprintf("--description=%s %d", storePath, target.Revision),
 		storePath+"/bin/switch-to-configuration", "switch")
 	if err != nil {
 		if ctx.Err() == nil {
-			if err := d.writeRecord(switchRecord{storePath, target.Revision, "start-failed"}); err != nil {
+			if err := d.writeRecord(switchRecord{storePath: storePath, revision: target.Revision, result: "start-failed"}); err != nil {
 				log.Print(err)
 			}
 		}
-		fail(err)
-		return
-	}
-	// Written only once the unit runs, so a running record without a loaded unit
-	// means the switch succeeded.
-	if err := d.writeRecord(switchRecord{storePath, target.Revision, "running"}); err != nil {
 		fail(err)
 		return
 	}
@@ -206,43 +211,35 @@ func (d *deployer) deploy(ctx context.Context, target *api.Deploy) {
 		fail(err)
 		return
 	}
-	done := switchRecord{storePath, target.Revision, cmp.Or(unit.result, "success")}
-	if err := d.writeRecord(done); err != nil {
-		fail(err)
-		return
-	}
-	if done.failed() {
-		fail(errors.New(done.failure()))
+	if unit.failed() {
+		fail(errors.New(unit.failure()))
 		return
 	}
 	progress.phase(api.DeployProgress_PHASE_DONE, "")
 	log.Printf("deployed %s", storePath)
 }
 
-// switchRecord is a switch and how it ended. The agent records each switch it
-// starts. Without --collect, the unit of a failed switch stays loaded with store
-// path and revision as description until the next switch resets it, while a
-// successful one is unloaded.
+// switchRecord is a switch and how it ended. With RemainAfterExit and without
+// --collect, its unit stays loaded with store path and revision as description
+// until the next switch removes it.
 type switchRecord struct {
 	storePath string
 	revision  int64
-	// result is running, success or why the switch failed, such as the unit result exit-code.
+	// result is starting, success, start-failed or the result of a failed unit,
+	// such as exit-code.
 	result string
+	loaded bool
 }
 
 func (r switchRecord) failed() bool {
-	return r.result != "" && r.result != "running" && r.result != "success"
+	return r.result != "" && r.result != "starting" && r.result != "success"
 }
 
 func (r switchRecord) failure() string {
 	return fmt.Sprintf("switch failed (%s), see journalctl -u %s", r.result, switchUnit)
 }
 
-// lastSwitch returns the last switch, given the ended state of the switch unit.
-func (d *deployer) lastSwitch(unit switchRecord) (switchRecord, error) {
-	if unit.failed() {
-		return unit, nil
-	}
+func (d *deployer) readRecord() (switchRecord, error) {
 	path := filepath.Join(d.root, switchRecordFile)
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -259,7 +256,7 @@ func (d *deployer) lastSwitch(unit switchRecord) (switchRecord, error) {
 	if err != nil {
 		return switchRecord{}, fmt.Errorf("%s: %w", path, err)
 	}
-	return switchRecord{fields[0], revision, fields[2]}, nil
+	return switchRecord{storePath: fields[0], revision: revision, result: fields[2]}, nil
 }
 
 func (d *deployer) writeRecord(record switchRecord) error {
@@ -271,35 +268,32 @@ func (d *deployer) writeRecord(record switchRecord) error {
 	return os.Rename(path+".tmp", path)
 }
 
-// awaitUnit waits for a running switch in unit and returns it with a result
-// only if it failed, and whether it had to wait.
+// awaitUnit waits for a running switch in unit and returns how it ended, and
+// whether it had to wait.
 func (d *deployer) awaitUnit(ctx context.Context, unit string) (switchRecord, bool, error) {
 	for waited := false; ; waited = true {
-		output, err := d.command(ctx, "systemctl", "show", "--property=ActiveState,Result,Description", unit).Output()
+		output, err := d.command(ctx, "systemctl", "show", "--property=LoadState,ActiveState,SubState,Result,Description", unit).Output()
 		if err != nil {
 			return switchRecord{}, waited, fmt.Errorf("systemctl show %s: %w", unit, err)
 		}
-		var state, result string
-		var record switchRecord
+		properties := map[string]string{}
 		for line := range strings.Lines(string(output)) {
 			key, value, _ := strings.Cut(strings.TrimSpace(line), "=")
-			switch key {
-			case "ActiveState":
-				state = value
-			case "Result":
-				result = value
-			case "Description":
-				var revision string
-				record.storePath, revision, _ = strings.Cut(value, " ")
-				record.revision, _ = strconv.ParseInt(revision, 10, 64)
-			}
+			properties[key] = value
 		}
-		switch state {
-		case "failed":
-			record.result = result
+		record := switchRecord{loaded: properties["LoadState"] == "loaded"}
+		var revision string
+		record.storePath, revision, _ = strings.Cut(properties["Description"], " ")
+		record.revision, _ = strconv.ParseInt(revision, 10, 64)
+		switch state := properties["ActiveState"]; {
+		case state == "failed":
+			record.result = properties["Result"]
 			return record, waited, nil
-		case "inactive":
+		case state == "active" && properties["SubState"] == "exited":
+			record.result = "success"
 			return record, waited, nil
+		case state == "inactive":
+			return switchRecord{}, waited, nil
 		}
 		select {
 		case <-ctx.Done():
