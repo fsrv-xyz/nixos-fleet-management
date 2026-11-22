@@ -21,8 +21,9 @@ func storePath(hash byte, name string) string {
 
 func TestDeployer(t *testing.T) {
 	running, next := storePath('a', "nixos-system-host"), storePath('b', "nixos-system-host")
-	// newRoot has running active and booted, and next built.
-	newRoot := func() string {
+	// newRoot has running and next built and links the current and booted system
+	// and the system profile.
+	newRoot := func(current, booted, profile string) string {
 		root := t.TempDir()
 		for _, path := range []string{running, next} {
 			if err := os.MkdirAll(filepath.Join(root, path), 0o755); err != nil {
@@ -32,17 +33,24 @@ func TestDeployer(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if err := os.MkdirAll(filepath.Join(root, "run"), 0o755); err != nil {
-			t.Fatal(err)
+		for _, dir := range []string{"run", systemProfiles} {
+			if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+				t.Fatal(err)
+			}
 		}
-		for _, link := range []string{"run/current-system", "run/booted-system"} {
-			if err := os.Symlink(running, filepath.Join(root, link)); err != nil {
+		for link, target := range map[string]string{
+			"run/current-system":              current,
+			"run/booted-system":               booted,
+			systemProfiles + "/system-1-link": profile,
+			systemProfiles + "/system":        "system-1-link",
+		} {
+			if err := os.Symlink(target, filepath.Join(root, link)); err != nil {
 				t.Fatal(err)
 			}
 		}
 		return root
 	}
-	root := newRoot()
+	root := newRoot(running, running, running)
 
 	type result struct {
 		commands []string
@@ -230,13 +238,7 @@ func TestDeployer(t *testing.T) {
 	r = deploy(stopped, root, polls(notLoaded, runningUnit(next, 6)), at(next, 6))
 	stopAt = 0
 	check("stopped agent", r, switching(next, 6), interrupted, record(next, 6, "starting"))
-	activeRoot := newRoot()
-	if err := os.Remove(filepath.Join(activeRoot, "run/current-system")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(next, filepath.Join(activeRoot, "run/current-system")); err != nil {
-		t.Fatal(err)
-	}
+	activeRoot := newRoot(next, running, next)
 	r = deploy(ctx, activeRoot, polls(succeeded(next, 6)), at(next, 6))
 	if !slices.Equal(r.commands, awaited) || !slices.Equal(r.phases, done) {
 		t.Errorf("succeeded while restarting: commands %v, phases %v", r.commands, r.phases)
@@ -307,15 +309,12 @@ func TestDeployer(t *testing.T) {
 	}
 
 	// Switched to since boot without the agent, the active store path is switched again.
-	bootedRoot := newRoot()
-	if err := os.Remove(filepath.Join(bootedRoot, "run/booted-system")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(next, filepath.Join(bootedRoot, "run/booted-system")); err != nil {
-		t.Fatal(err)
-	}
-	if r = deploy(ctx, bootedRoot, polls(notLoaded, succeeded(running, 3)), at(running, 3)); !slices.Equal(r.phases, switched) {
+	if r = deploy(ctx, newRoot(running, next, running), polls(notLoaded, succeeded(running, 3)), at(running, 3)); !slices.Equal(r.phases, switched) {
 		t.Errorf("active, switched to since boot: phases %v, want a switch", r.phases)
+	}
+	// Interrupted after setting the profile to another store path, the active one is switched again.
+	if r = deploy(ctx, newRoot(running, running, next), polls(succeeded(running, 1), succeeded(running, 3)), at(running, 3)); !slices.Equal(r.phases, switched) {
+		t.Errorf("active, profile set to another: phases %v, want a switch", r.phases)
 	}
 
 	// The result of a switch in the legacy unit is lost, so the agent switches again.
@@ -326,7 +325,7 @@ func TestDeployer(t *testing.T) {
 	check("legacy switch", r, append([]string{showLegacy}, switching(running, 1)...), switched, record(running, 1, "starting"))
 
 	// The agent restarted by a switch waits for it before reading the active store path.
-	switchingRoot := newRoot()
+	switchingRoot := newRoot(running, running, next)
 	activated := filepath.Join(t.TempDir(), "activated")
 	r = deploy(ctx, switchingRoot, map[string]string{"systemctl": `[ "$1" = show ] || exit 0
 		if [ -e ` + activated + ` ]; then printf '` + succeeded(next, 1) + `'

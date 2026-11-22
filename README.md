@@ -87,7 +87,8 @@ The agent fetches the closure, sets the system profile and runs
 `switch-to-configuration switch` in the unit `fleet-agent-switch`, whose journal
 holds the switch output and stays loaded until the next switch, so the agent
 reports its result after a reconnect. An active store path counts as deployed
-only after a successful switch to it, or when booted with no switch since;
+only as the system profile and after a successful switch to it, or when booted
+with no switch since;
 assigned again, a store path whose switch failed is switched again.
 
 ## Development
