@@ -78,6 +78,9 @@ in
         StateDirectoryMode = "0700";
         Restart = "always";
         RestartSec = 5;
+        # SIGTERM reaches only the agent, so a command it kills on stop is not
+        # mistaken for a failed deployment.
+        KillMode = "mixed";
       };
     };
   };
