@@ -68,6 +68,8 @@ message DeployProgress {
   Phase phase = 2;
   // The latest output line, or the error once failed.
   string message = 3;
+  // Deploy.revision of the assignment this reports on.
+  int64 revision = 4;
 }
 
 message ServerMessage {

@@ -486,7 +486,9 @@ type DeployProgress struct {
 	StorePath string                 `protobuf:"bytes,1,opt,name=store_path,json=storePath,proto3" json:"store_path,omitempty"`
 	Phase     DeployProgress_Phase   `protobuf:"varint,2,opt,name=phase,proto3,enum=fleet.v1.DeployProgress_Phase" json:"phase,omitempty"`
 	// The latest output line, or the error once failed.
-	Message       string `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	Message string `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	// Deploy.revision of the assignment this reports on.
+	Revision      int64 `protobuf:"varint,4,opt,name=revision,proto3" json:"revision,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -540,6 +542,13 @@ func (x *DeployProgress) GetMessage() string {
 		return x.Message
 	}
 	return ""
+}
+
+func (x *DeployProgress) GetRevision() int64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
 }
 
 type ServerMessage struct {
@@ -894,12 +903,13 @@ const file_fleet_proto_rawDesc = "" +
 	"\rnixos_version\x18\x03 \x01(\tR\fnixosVersion\x12*\n" +
 	"\x11booted_store_path\x18\x04 \x01(\tR\x0fbootedStorePath\x12,\n" +
 	"\x12profile_store_path\x18\x05 \x01(\tR\x10profileStorePath\x12'\n" +
-	"\x0freboot_required\x18\x06 \x01(\bR\x0erebootRequired\"\xec\x01\n" +
+	"\x0freboot_required\x18\x06 \x01(\bR\x0erebootRequired\"\x88\x02\n" +
 	"\x0eDeployProgress\x12\x1d\n" +
 	"\n" +
 	"store_path\x18\x01 \x01(\tR\tstorePath\x124\n" +
 	"\x05phase\x18\x02 \x01(\x0e2\x1e.fleet.v1.DeployProgress.PhaseR\x05phase\x12\x18\n" +
-	"\amessage\x18\x03 \x01(\tR\amessage\"k\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\x12\x1a\n" +
+	"\brevision\x18\x04 \x01(\x03R\brevision\"k\n" +
 	"\x05Phase\x12\x15\n" +
 	"\x11PHASE_UNSPECIFIED\x10\x00\x12\x13\n" +
 	"\x0fPHASE_REALISING\x10\x01\x12\x14\n" +

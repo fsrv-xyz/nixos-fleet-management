@@ -69,7 +69,9 @@ func (d *Deployments) follow(ctx context.Context, stream grpc.ServerStreamingSer
 			if err := json.Unmarshal(ev.Kv.Value, &deploy); err != nil {
 				return err
 			}
-			if deploy.StorePath != storePath {
+			// A later assignment of the same store path settles this one too; agents
+			// before revisions report 0.
+			if deploy.StorePath != storePath || deploy.Revision != 0 && deploy.Revision < revision {
 				continue
 			}
 			phase := api.DeployProgress_Phase(api.DeployProgress_Phase_value[deploy.Phase])

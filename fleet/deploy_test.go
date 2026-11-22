@@ -181,6 +181,28 @@ func TestDeployer(t *testing.T) {
 		check(fmt.Sprintf("retry of revision %d as %d", recorded, assigned), r,
 			[]string{showLegacy, show, realise(running), setProfile(running), resetFailed, switchTo(running, assigned)}, switched)
 	}
+	record := filepath.Join(root, "run/fleet-agent-switch.failed")
+	if _, err := os.Stat(record); !os.IsNotExist(err) {
+		t.Errorf("failure record left after the retry: %v", err)
+	}
+
+	// Stopped once the retry reset the unit, the agent keeps the failure in a record.
+	stopped, stop = context.WithCancel(ctx)
+	defer stop()
+	stopAt, stopAgent = "systemd-run", stop
+	r = deploy(stopped, root, map[string]string{"systemctl": polls(unit("failed", "exit-code", running+" 5"))}, at(running, 6))
+	stopAt = ""
+	if data, err := os.ReadFile(record); err != nil || string(data) != running+" 5 exit-code" {
+		t.Fatalf("failure record %q: %v", data, err)
+	}
+	// Restarted, it reports the recorded failure when resent and retries when assigned again.
+	r = deploy(ctx, root, nil, at(running, 5))
+	check("recorded failure resent", r, []string{showLegacy, show}, []string{"PHASE_FAILED"})
+	r = deploy(ctx, root, nil, at(running, 6))
+	check("recorded failure assigned again", r, []string{showLegacy, show, realise(running), setProfile(running), switchTo(running, 6)}, switched)
+	if _, err := os.Stat(record); !os.IsNotExist(err) {
+		t.Errorf("failure record left after the retry: %v", err)
+	}
 
 	// The result of a switch in the legacy unit is lost, so the agent switches again.
 	r = deploy(ctx, root, map[string]string{"legacy": polls(unit("active", "success", "x"), unit("inactive", "success", "x"))}, at(running, 1))
