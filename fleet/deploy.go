@@ -107,6 +107,12 @@ func (d *deployer) deploy(ctx context.Context, storePath string) {
 		progress.phase(api.DeployProgress_PHASE_FAILED, fmt.Sprintf("invalid store path %q", storePath))
 		return
 	}
+	// A running switch may still change the active store path, so wait for it first.
+	last, err := d.lastSwitch(ctx)
+	if err != nil {
+		fail(err)
+		return
+	}
 	generation, err := nixosGeneration(d.root)
 	switch {
 	case err != nil:
@@ -114,11 +120,6 @@ func (d *deployer) deploy(ctx context.Context, storePath string) {
 		return
 	case generation == nil:
 		progress.phase(api.DeployProgress_PHASE_FAILED, "not a NixOS host")
-		return
-	}
-	last, err := d.lastSwitch(ctx)
-	if err != nil {
-		fail(err)
 		return
 	}
 	// Activation sets /run/current-system before the switch restarts this agent

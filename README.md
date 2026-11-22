@@ -54,6 +54,8 @@ node1 SHA256:4C0AE12A…
 # fleet-ca sign node1
 ```
 
+`fleet-ca reject` deletes pending requests; beyond 1000 of them, new ones are refused.
+
 The agent renews its certificate after two thirds of its lifetime. Connected
 over IPv4, it checks every five minutes whether its server answers over IPv6 and
 reconnects once it does.

@@ -166,14 +166,40 @@ func TestDeployer(t *testing.T) {
 		t.Errorf("switch failing after agent restart: phases %v", r.phases)
 	}
 
+	// The agent restarted by a switch waits for it before reading the active store path.
+	switching := t.TempDir()
+	for _, path := range []string{running, next} {
+		if err := os.MkdirAll(filepath.Join(switching, path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(switching, path, "nixos-version"), []byte("26.05"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(switching, "run"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(running, filepath.Join(switching, "run/current-system")); err != nil {
+		t.Fatal(err)
+	}
+	activated := filepath.Join(t.TempDir(), "activated")
+	r = deploy(ctx, switching, map[string]string{"systemctl": `[ "$1" = show ] || exit 0
+		if [ -e ` + activated + ` ]; then printf '` + unit("inactive", "success", "fleet-agent-switch.service") + `'
+		else touch ` + activated + `; ln -sfn ` + next + ` ` + filepath.Join(switching, "run/current-system") + `
+			printf '` + unit("active", "success", next) + `'; fi`}, next)
+	if !slices.Equal(r.commands, []string{show, show}) || !slices.Equal(r.phases, []string{"PHASE_DONE"}) || r.last.Message != "already active" {
+		t.Errorf("switch activating while waiting: commands %v, phases %v, message %q", r.commands, r.phases, r.last.Message)
+	}
+
 	for _, tc := range []struct {
 		name, root, path, message string
+		commands                  int
 	}{
-		{"invalid store path", root, "/nix/store/x; reboot", "invalid store path"},
-		{"not NixOS", t.TempDir(), next, "not a NixOS host"},
+		{"invalid store path", root, "/nix/store/x; reboot", "invalid store path", 0},
+		{"not NixOS", t.TempDir(), next, "not a NixOS host", 1},
 	} {
 		r := deploy(ctx, tc.root, nil, tc.path)
-		if len(r.commands) != 0 || len(r.phases) != 1 || !strings.Contains(r.last.Message, tc.message) {
+		if len(r.commands) != tc.commands || len(r.phases) != 1 || !strings.Contains(r.last.Message, tc.message) {
 			t.Errorf("%s: commands %v, phases %v, message %q", tc.name, r.commands, r.phases, r.last.Message)
 		}
 	}

@@ -214,6 +214,17 @@ func (c *CA) IssueDeployer(ctx context.Context, name string) (certPEM, keyPEM []
 	return certPEM, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), nil
 }
 
+func (c *CA) Reject(ctx context.Context, name string) error {
+	resp, err := c.etcd.Delete(ctx, requestsPrefix+name)
+	if err != nil {
+		return err
+	}
+	if resp.Deleted == 0 {
+		return fmt.Errorf("no pending request for %q", name)
+	}
+	return nil
+}
+
 func (c *CA) RevokeDeployer(ctx context.Context, name string) error {
 	resp, err := c.etcd.Delete(ctx, deployersPrefix+name)
 	if err != nil {
