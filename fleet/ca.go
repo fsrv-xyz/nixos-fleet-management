@@ -35,10 +35,12 @@ const (
 	deployersPrefix   = "/ca/deployers/"
 	deployerOU        = "deploy"
 	maxCSRSize        = 4 << 10
+	// maxCertnameLength applies to new requests only, so names taken before stay usable.
+	maxCertnameLength = 253
 )
 
 var (
-	certnamePattern          = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,252}$`)
+	certnamePattern          = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*$`)
 	maxPendingRequests int64 = 1000
 )
 
@@ -66,6 +68,9 @@ func (c *CA) RequestCertificate(ctx context.Context, req *api.CertificateRequest
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	name := csr.Subject.CommonName
+	if len(name) > maxCertnameLength {
+		return nil, status.Errorf(codes.InvalidArgument, "certname of %d characters exceeds %d", len(name), maxCertnameLength)
+	}
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csr.Raw})
 
 	requests, err := c.etcd.Get(ctx, requestsPrefix, clientv3.WithPrefix(), clientv3.WithCountOnly())

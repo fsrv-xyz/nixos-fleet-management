@@ -52,7 +52,21 @@ type Server struct {
 
 // agentSession receives the desired store path of a connected agent.
 type agentSession struct {
-	desired latest[*api.Deploy]
+	desired  latest[*api.Deploy]
+	mu       sync.Mutex
+	revision int64
+}
+
+// offer skips an assignment older than one offered before, as the read in
+// Connect races with the watch.
+func (s *agentSession) offer(deploy *api.Deploy) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if deploy.Revision < s.revision {
+		return
+	}
+	s.revision = deploy.Revision
+	s.desired.offer(deploy)
 }
 
 func desiredDeploy(kv *mvccpb.KeyValue) *api.Deploy {
@@ -155,7 +169,7 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[api.AgentMessage, api.S
 		return status.Errorf(codes.Unavailable, "read desired state: %v", err)
 	}
 	if len(resp.Kvs) > 0 {
-		session.desired.offer(desiredDeploy(resp.Kvs[0]))
+		session.offer(desiredDeploy(resp.Kvs[0]))
 	}
 
 	// Recv runs apart, so this goroutine is the only one calling Send.
@@ -230,7 +244,7 @@ func (s *Server) offerDesired(id string, deploy *api.Deploy) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for session := range s.sessions[id] {
-		session.desired.offer(deploy)
+		session.offer(deploy)
 	}
 }
 
