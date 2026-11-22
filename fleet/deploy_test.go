@@ -197,6 +197,8 @@ func TestDeployer(t *testing.T) {
 		!slices.Equal(r.phases, switchFailed) || !strings.Contains(r.last.Message, "stopped") {
 		t.Errorf("stopped switch: commands %v, phases %v, message %q", r.commands, r.phases, r.last.Message)
 	}
+	r = deploy(ctx, root, nil, at(next, 1))
+	check("stopped switch, resent", r, awaited, failure, record(next, 1, "stopped"))
 
 	setRecord("")
 	scripts = polls(notLoaded)
