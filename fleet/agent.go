@@ -198,7 +198,7 @@ func session(ctx context.Context, client api.FleetClient, deployer *deployer, re
 				return
 			}
 			if deploy := msg.GetDeploy(); deploy != nil {
-				deployer.offer(deploy.StorePath)
+				deployer.offer(deploy)
 			}
 		}
 	}()

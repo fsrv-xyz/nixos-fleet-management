@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -51,7 +52,11 @@ type Server struct {
 
 // agentSession receives the desired store path of a connected agent.
 type agentSession struct {
-	desired latest[string]
+	desired latest[*api.Deploy]
+}
+
+func desiredDeploy(kv *mvccpb.KeyValue) *api.Deploy {
+	return &api.Deploy{StorePath: string(kv.Value), Revision: kv.ModRevision}
 }
 
 // agentFeed holds the latest agent list as JSON; changed is closed and replaced
@@ -141,7 +146,7 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[api.AgentMessage, api.S
 		log.Printf("agent %s disconnected", id)
 	}()
 
-	session := &agentSession{desired: make(latest[string], 1)}
+	session := &agentSession{desired: make(latest[*api.Deploy], 1)}
 	s.addSession(id, session)
 	defer s.removeSession(id, session)
 	resp, err := s.etcd.Get(ctx, agentsPrefix+id+"/desired")
@@ -149,7 +154,7 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[api.AgentMessage, api.S
 		return status.Errorf(codes.Unavailable, "read desired state: %v", err)
 	}
 	if len(resp.Kvs) > 0 {
-		session.desired.offer(string(resp.Kvs[0].Value))
+		session.desired.offer(desiredDeploy(resp.Kvs[0]))
 	}
 
 	// Recv runs apart, so this goroutine is the only one calling Send.
@@ -177,8 +182,8 @@ func (s *Server) Connect(stream grpc.BidiStreamingServer[api.AgentMessage, api.S
 				return nil
 			}
 			return err
-		case storePath := <-session.desired:
-			if err := stream.Send(&api.ServerMessage{Body: &api.ServerMessage_Deploy{Deploy: &api.Deploy{StorePath: storePath}}}); err != nil {
+		case deploy := <-session.desired:
+			if err := stream.Send(&api.ServerMessage{Body: &api.ServerMessage_Deploy{Deploy: deploy}}); err != nil {
 				return err
 			}
 		case msg := <-msgs:
@@ -220,11 +225,11 @@ func (s *Server) removeSession(id string, session *agentSession) {
 	}
 }
 
-func (s *Server) offerDesired(id, storePath string) {
+func (s *Server) offerDesired(id string, deploy *api.Deploy) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for session := range s.sessions[id] {
-		session.desired.offer(storePath)
+		session.desired.offer(deploy)
 	}
 }
 
@@ -328,9 +333,9 @@ func (s *Server) watchAgents(ctx context.Context) error {
 		}
 	}
 	// Agents connected here may have missed desired changes while the watch was down.
-	for id, state := range agents {
-		if state.desired != "" {
-			s.offerDesired(id, state.desired)
+	for _, kv := range resp.Kvs {
+		if id, sub := splitAgentKey(kv.Key); sub == "desired" {
+			s.offerDesired(id, desiredDeploy(kv))
 		}
 	}
 	if err := s.publish(agents); err != nil {
@@ -351,7 +356,7 @@ func (s *Server) watchAgents(ctx context.Context) error {
 				return err
 			}
 			if id, sub := splitAgentKey(ev.Kv.Key); sub == "desired" && value != nil {
-				s.offerDesired(id, string(value))
+				s.offerDesired(id, desiredDeploy(ev.Kv))
 			}
 		}
 		if err := s.publish(agents); err != nil {
