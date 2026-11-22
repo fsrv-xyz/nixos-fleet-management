@@ -190,6 +190,14 @@ func TestDeployer(t *testing.T) {
 		t.Errorf("failed switch: message %q", r.last.Message)
 	}
 
+	// Stopped by someone else, the unit is gone without a result.
+	setRecord("")
+	r = deploy(ctx, root, polls(notLoaded, runningUnit(next, 1), notLoaded), at(next, 1))
+	if want := slices.Concat(switching(next, 1), []string{show}); !slices.Equal(r.commands, want) ||
+		!slices.Equal(r.phases, switchFailed) || !strings.Contains(r.last.Message, "stopped") {
+		t.Errorf("stopped switch: commands %v, phases %v, message %q", r.commands, r.phases, r.last.Message)
+	}
+
 	setRecord("")
 	scripts = polls(notLoaded)
 	scripts["systemd-run"] = "echo 'Failed to start transient service unit' >&2; exit 1"
