@@ -132,20 +132,17 @@ func (d *deployer) deploy(ctx context.Context, target *api.Deploy) {
 		progress.phase(api.DeployProgress_PHASE_FAILED, "not a NixOS host")
 		return
 	}
+	recordedFailure := last.storePath == storePath && last.failed()
+	switch {
+	case recordedFailure && last.revision != 0 && last.revision == target.Revision:
+		// Resent after a reconnect rather than assigned again.
+		progress.phase(api.DeployProgress_PHASE_FAILED, last.failure())
+		return
 	// Activation sets /run/current-system before the switch restarts this agent
-	// and finishes, so an active store path is not necessarily switched to.
-	if generation.StorePath == storePath {
-		switch {
-		case legacy.waited:
-			// Switching again tells the result the legacy unit did not keep.
-		case last.storePath != storePath || !last.failed():
-			progress.phase(api.DeployProgress_PHASE_DONE, "already active")
-			return
-		case last.revision != 0 && last.revision == target.Revision:
-			// Resent after a reconnect rather than assigned again.
-			progress.phase(api.DeployProgress_PHASE_FAILED, last.failure())
-			return
-		}
+	// and finishes, and the legacy unit keeps no result.
+	case generation.StorePath == storePath && !recordedFailure && !legacy.waited:
+		progress.phase(api.DeployProgress_PHASE_DONE, "already active")
+		return
 	}
 
 	log.Printf("deploying %s", storePath)

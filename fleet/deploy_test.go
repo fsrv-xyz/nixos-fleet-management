@@ -170,6 +170,10 @@ func TestDeployer(t *testing.T) {
 		t.Errorf("switch failing after agent restart: message %q", r.last.Message)
 	}
 
+	// Resent, a switch that failed before activation is reported, not retried.
+	r = deploy(ctx, root, map[string]string{"systemctl": polls(unit("failed", "exit-code", next+" 5"))}, at(next, 5))
+	check("switch failed before activation, resent", r, []string{showLegacy, show}, []string{"PHASE_FAILED"})
+
 	// Assigned again, or by a server not sending revisions, a failed switch is retried.
 	for _, revisions := range [][2]int{{5, 6}, {0, 0}} {
 		recorded, assigned := revisions[0], revisions[1]
