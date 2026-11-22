@@ -140,7 +140,9 @@ func (c *CA) List(ctx context.Context, w io.Writer) error {
 	return nil
 }
 
-func (c *CA) Sign(ctx context.Context, name string) error {
+// Sign issues a certificate for the pending request of name, only if it has the
+// fingerprint the operator verified, as a rejected request can be replaced.
+func (c *CA) Sign(ctx context.Context, name, fingerprint string) error {
 	resp, err := c.etcd.Get(ctx, requestsPrefix+name)
 	if err != nil {
 		return err
@@ -151,6 +153,9 @@ func (c *CA) Sign(ctx context.Context, name string) error {
 	csr, err := parseCSR(resp.Kvs[0].Value)
 	if err != nil {
 		return err
+	}
+	if pending := Fingerprint(csr.Raw); !strings.EqualFold(pending, fingerprint) {
+		return fmt.Errorf("pending request for %q has fingerprint %s, not %s", name, pending, fingerprint)
 	}
 	certPEM, err := c.issue(name, csr.PublicKey)
 	if err != nil {

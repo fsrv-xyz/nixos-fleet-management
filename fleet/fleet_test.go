@@ -367,12 +367,14 @@ func TestCertificateSigning(t *testing.T) {
 		done <- EnsureCertificate(ctx, []string{freeAddr(t), lis.Addr().String()}, filepath.Join(dir, "ca.crt"), certFile, keyFile, "node1", 50*time.Millisecond)
 	}()
 
+	var fingerprint string
 	for {
 		var pending bytes.Buffer
 		if err := ca.List(ctx, &pending); err != nil {
 			t.Fatal(err)
 		}
-		if strings.HasPrefix(pending.String(), "node1 SHA256:") {
+		if listed, ok := strings.CutPrefix(strings.TrimSpace(pending.String()), "node1 "); ok {
+			fingerprint = listed
 			break
 		}
 		select {
@@ -391,7 +393,10 @@ func TestCertificateSigning(t *testing.T) {
 		}
 	}
 
-	if err := ca.Sign(ctx, "node1"); err != nil {
+	if err := ca.Sign(ctx, "node1", Fingerprint([]byte("another key"))); err == nil {
+		t.Fatal("signed a request with another fingerprint than verified")
+	}
+	if err := ca.Sign(ctx, "node1", fingerprint); err != nil {
 		t.Fatal(err)
 	}
 	if err := <-done; err != nil {

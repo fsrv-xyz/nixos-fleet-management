@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
@@ -44,11 +45,12 @@ func main() {
 	path := flag.String("config", "", "JSON config file; without it, development defaults apply")
 	flag.Usage = func() {
 		fmt.Fprintln(flag.CommandLine.Output(), `usage:
-  fleet-server [-config file]                                 serve
-  fleet-server [-config file] ca list                         list pending certificate requests
-  fleet-server [-config file] ca sign | reject <certname>...  sign or delete pending requests
-  fleet-server [-config file] ca deployer | revoke <name>     issue or revoke a deploy certificate
-  fleet-server [-config file] deploy <certname> <store path>  assign a system closure`)
+  fleet-server [-config file]                                      serve
+  fleet-server [-config file] ca list                              list pending requests as <certname> <fingerprint>
+  fleet-server [-config file] ca sign <certname> <fingerprint>...  sign pending requests as listed
+  fleet-server [-config file] ca reject <certname>...              delete pending requests
+  fleet-server [-config file] ca deployer | revoke <name>          issue or revoke a deploy certificate
+  fleet-server [-config file] deploy <certname> <store path>       assign a system closure`)
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -159,7 +161,7 @@ func serve(cfg config) {
 
 func caCommand(cfg config, args []string) {
 	list := len(args) == 1 && args[0] == "list"
-	sign := len(args) > 1 && args[0] == "sign"
+	sign := len(args) > 1 && len(args)%2 == 1 && args[0] == "sign"
 	reject := len(args) > 1 && args[0] == "reject"
 	deployer := len(args) == 2 && args[0] == "deployer"
 	revoke := len(args) == 2 && args[0] == "revoke"
@@ -202,11 +204,11 @@ func caCommand(cfg config, args []string) {
 			fmt.Printf("rejected %s\n", name)
 		}
 	default:
-		for _, name := range args[1:] {
-			if err := ca.Sign(ctx, name); err != nil {
+		for pair := range slices.Chunk(args[1:], 2) {
+			if err := ca.Sign(ctx, pair[0], pair[1]); err != nil {
 				log.Fatal(err)
 			}
-			fmt.Printf("signed %s\n", name)
+			fmt.Printf("signed %s\n", pair[0])
 		}
 	}
 }
