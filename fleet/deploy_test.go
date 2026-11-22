@@ -40,13 +40,14 @@ func TestDeployer(t *testing.T) {
 		phases   []string
 		last     *api.DeployProgress
 	}
-	var stopAt string
+	// stopAt cancels the agent's context at this command, counting from 1.
+	var stopAt int
 	var stopAgent context.CancelFunc
 	// unit is systemctl show output for a switch unit.
 	unit := func(state, result, description string) string {
 		return `ActiveState=` + state + `\nResult=` + result + `\nDescription=` + description + `\n`
 	}
-	notLoaded := `printf '` + unit("inactive", "success", "fleet-agent-switch.service") + `'`
+	notLoaded := unit("inactive", "success", "fleet-agent-switch.service")
 	// deploy offers targets one after another to the same deployer. scripts["systemctl"]
 	// answers for fleet-agent-switch, scripts["legacy"] for the legacy unit.
 	deploy := func(ctx context.Context, root string, scripts map[string]string, targets ...*api.Deploy) result {
@@ -58,7 +59,7 @@ func TestDeployer(t *testing.T) {
 		d.root = root
 		d.command = func(ctx context.Context, name string, args ...string) *exec.Cmd {
 			r.commands = append(r.commands, strings.Join(append([]string{name}, args...), " "))
-			if name == stopAt {
+			if len(r.commands) == stopAt {
 				stopAgent()
 			}
 			key := name
@@ -67,7 +68,7 @@ func TestDeployer(t *testing.T) {
 			}
 			script, ok := scripts[key]
 			if !ok && name == "systemctl" {
-				script = notLoaded
+				script = `printf '` + notLoaded + `'`
 			}
 			return exec.CommandContext(ctx, "sh", append([]string{"-c", script, name}, args...)...)
 		}
@@ -94,7 +95,10 @@ func TestDeployer(t *testing.T) {
 	switchTo := func(path string, revision int) string {
 		return "systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER=0 -E NIXOS_NO_CHECK --no-ask-password --quiet" +
 			" --service-type=exec --unit=fleet-agent-switch --description=" + path + " " + strconv.Itoa(revision) +
-			" --wait " + path + "/bin/switch-to-configuration switch"
+			" " + path + "/bin/switch-to-configuration switch"
+	}
+	switching := func(path string, revision int) []string {
+		return []string{realise(path), setProfile(path), switchTo(path, revision), show}
 	}
 	// polls answers the n-th systemctl show with the n-th of units, then with the last.
 	polls := func(units ...string) string {
@@ -109,7 +113,19 @@ func TestDeployer(t *testing.T) {
 		}
 		return script + ` esac`
 	}
-	check := func(name string, r result, commands, phases []string) {
+	recordFile := filepath.Join(root, "run/fleet-agent-switch")
+	setRecord := func(record string) {
+		t.Helper()
+		if err := os.Remove(recordFile); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if record != "" {
+			if err := os.WriteFile(recordFile, []byte(record+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	check := func(name string, r result, commands, phases []string, record string) {
 		t.Helper()
 		if !slices.Equal(r.commands, commands) {
 			t.Errorf("%s: commands:\n%s\nwant:\n%s", name, strings.Join(r.commands, "\n"), strings.Join(commands, "\n"))
@@ -117,119 +133,145 @@ func TestDeployer(t *testing.T) {
 		if !slices.Equal(r.phases, phases) {
 			t.Errorf("%s: phases %v, want %v", name, r.phases, phases)
 		}
+		if data, _ := os.ReadFile(recordFile); strings.TrimSpace(string(data)) != record {
+			t.Errorf("%s: record %q, want %q", name, data, record)
+		}
 	}
 	switched := []string{"PHASE_REALISING", "PHASE_ACTIVATING", "PHASE_DONE"}
+	switchFailed := []string{"PHASE_REALISING", "PHASE_ACTIVATING", "PHASE_FAILED"}
+	with := func(commands ...[]string) []string { return slices.Concat(commands...) }
+	awaited := []string{showLegacy, show}
 
+	setRecord("")
 	r := deploy(ctx, root, map[string]string{"nix-store": "echo copying path 1; echo copying path 2"}, at(next, 1))
-	check("switch", r, []string{showLegacy, show, realise(next), setProfile(next), switchTo(next, 1)}, switched)
-	if r.last.StorePath != next {
-		t.Errorf("progress for %s, want %s", r.last.StorePath, next)
+	check("switch", r, with(awaited, switching(next, 1)), switched, next+" 1 success")
+	if r.last.StorePath != next || r.last.Revision != 1 {
+		t.Errorf("progress for %s at %d, want %s at 1", r.last.StorePath, r.last.Revision, next)
 	}
 
+	setRecord("")
 	r = deploy(ctx, root, map[string]string{"nix-store": "echo copying path 1; echo 'error: cannot substitute' >&2; exit 1"}, at(next, 1))
-	check("failed realise", r, []string{showLegacy, show, realise(next)}, []string{"PHASE_REALISING", "PHASE_FAILED"})
+	check("failed realise", r, with(awaited, []string{realise(next)}), []string{"PHASE_REALISING", "PHASE_FAILED"}, "")
 	if !strings.Contains(r.last.Message, "error: cannot substitute") {
 		t.Errorf("failed realise: message %q", r.last.Message)
 	}
 
-	// The failed unit stays loaded as the record of the failure.
-	r = deploy(ctx, root, map[string]string{"systemd-run": "exit 4"}, at(next, 1))
-	check("failed switch", r, []string{showLegacy, show, realise(next), setProfile(next), switchTo(next, 1)},
-		[]string{"PHASE_REALISING", "PHASE_ACTIVATING", "PHASE_FAILED"})
+	setRecord("")
+	r = deploy(ctx, root, map[string]string{"systemctl": polls(notLoaded, unit("failed", "exit-code", next+" 1"))}, at(next, 1))
+	check("failed switch", r, with(awaited, switching(next, 1)), switchFailed, next+" 1 exit-code")
 	if !strings.Contains(r.last.Message, "journalctl -u fleet-agent-switch") {
 		t.Errorf("failed switch: message %q", r.last.Message)
 	}
 
 	// A switch the agent did not see end is awaited and reset before the next one, without blaming it.
-	r = deploy(ctx, root, map[string]string{"systemctl": polls(unit("active", "success", running+" 1"), unit("failed", "exit-code", running+" 1"))}, at(next, 1))
-	check("previous switch", r, []string{showLegacy, show, show, realise(next), setProfile(next), resetFailed, switchTo(next, 1)}, switched)
+	setRecord("")
+	r = deploy(ctx, root, map[string]string{"systemctl": polls(unit("active", "success", running+" 1"), unit("failed", "exit-code", running+" 1"), notLoaded)}, at(next, 2))
+	check("previous switch", r, []string{showLegacy, show, show, realise(next), setProfile(next), resetFailed, switchTo(next, 2), show}, switched, next+" 2 success")
 
+	// Stopped while a retry runs, the agent leaves it running and reports nothing.
+	setRecord(running + " 5 exit-code")
 	stopped, stop := context.WithCancel(ctx)
 	defer stop()
-	stopAt, stopAgent = "systemd-run", stop
-	r = deploy(stopped, root, nil, at(next, 1))
-	stopAt = ""
-	check("stopped agent", r, []string{showLegacy, show, realise(next), setProfile(next), switchTo(next, 1)}, []string{"PHASE_REALISING", "PHASE_ACTIVATING"})
+	stopAt, stopAgent = 6, stop
+	r = deploy(stopped, root, map[string]string{"systemctl": polls(notLoaded, unit("active", "success", running+" 6"))}, at(running, 6))
+	stopAt = 0
+	check("stopped agent", r, with(awaited, switching(running, 6)), []string{"PHASE_REALISING", "PHASE_ACTIVATING"}, running+" 6 running")
+	// Restarted, it finds the switch it started ended: successful as its unit is gone, or failed.
+	r = deploy(ctx, root, nil, at(running, 6))
+	check("succeeded while restarting", r, awaited, []string{"PHASE_DONE"}, running+" 6 running")
+	r = deploy(ctx, root, map[string]string{"systemctl": polls(unit("failed", "exit-code", running+" 6"))}, at(running, 6))
+	check("failed while restarting, resent", r, awaited, []string{"PHASE_FAILED"}, running+" 6 running")
+	if !strings.Contains(r.last.Message, "exit-code") {
+		t.Errorf("failed while restarting: message %q", r.last.Message)
+	}
+
+	// The agent restarted by its switch waits for it and reports its failure.
+	setRecord(running + " 5 running")
+	r = deploy(ctx, root, map[string]string{"systemctl": polls(unit("active", "success", running+" 5"), unit("failed", "exit-code", running+" 5"))}, at(running, 5))
+	check("switch failing after agent restart", r, []string{showLegacy, show, show}, []string{"PHASE_FAILED"}, running+" 5 running")
+
+	// Resent, a switch that failed before activation is reported, not retried.
+	setRecord("")
+	r = deploy(ctx, root, map[string]string{"systemctl": polls(unit("failed", "exit-code", next+" 5"))}, at(next, 5))
+	check("failed before activation, resent", r, awaited, []string{"PHASE_FAILED"}, "")
+
+	// Assigned again, or by a server not sending revisions, a failed switch is retried.
+	for _, revisions := range [][2]int{{5, 6}, {0, 0}} {
+		recorded, assigned := revisions[0], revisions[1]
+		setRecord("")
+		r = deploy(ctx, root, map[string]string{"systemctl": polls(unit("failed", "exit-code", running+" "+strconv.Itoa(recorded)), notLoaded)}, at(running, int64(assigned)))
+		check(fmt.Sprintf("retry of revision %d as %d", recorded, assigned), r,
+			[]string{showLegacy, show, realise(running), setProfile(running), resetFailed, switchTo(running, assigned), show},
+			switched, fmt.Sprintf("%s %d success", running, assigned))
+	}
+
+	// The record keeps a failure whose unit the retry reset.
+	setRecord("")
+	stopped, stop = context.WithCancel(ctx)
+	defer stop()
+	stopAt, stopAgent = 6, stop
+	r = deploy(stopped, root, map[string]string{"systemctl": polls(unit("failed", "exit-code", running+" 5"))}, at(running, 6))
+	stopAt = 0
+	check("stopped before the retry started", r, []string{showLegacy, show, realise(running), setProfile(running), resetFailed, switchTo(running, 6)},
+		[]string{"PHASE_REALISING", "PHASE_ACTIVATING"}, running+" 5 exit-code")
+	for name, record := range map[string]string{
+		"stopped before the retry started": running + " 5 exit-code",
+		"retry failed to start":            running + " 5 start-failed",
+	} {
+		setRecord(record)
+		r = deploy(ctx, root, nil, at(running, 5))
+		check(name+", resent", r, awaited, []string{"PHASE_FAILED"}, record)
+		r = deploy(ctx, root, nil, at(running, 6))
+		check(name+", assigned again", r, with(awaited, switching(running, 6)), switched, running+" 6 success")
+	}
+	setRecord(running + " 6 exit-code")
+	r = deploy(ctx, root, map[string]string{"systemd-run": "echo 'Failed to start transient service unit' >&2; exit 1"}, at(running, 7))
+	check("retry failing to start", r, with(awaited, []string{realise(running), setProfile(running), switchTo(running, 7)}), switchFailed, running+" 7 start-failed")
+	if !strings.Contains(r.last.Message, "Failed to start transient service unit") {
+		t.Errorf("retry failing to start: message %q", r.last.Message)
+	}
 
 	for name, systemctl := range map[string]string{
 		"no switch recorded":            notLoaded,
-		"failed switch to another path": polls(unit("failed", "exit-code", next+" 1")),
+		"failed switch to another path": unit("failed", "exit-code", next+" 1"),
 	} {
-		r = deploy(ctx, root, map[string]string{"systemctl": systemctl}, at(running, 1))
-		check("already active, "+name, r, []string{showLegacy, show}, []string{"PHASE_DONE"})
+		setRecord("")
+		r = deploy(ctx, root, map[string]string{"systemctl": polls(systemctl)}, at(running, 1))
+		check("already active, "+name, r, awaited, []string{"PHASE_DONE"}, "")
 		if r.last.Message != "already active" {
 			t.Errorf("already active, %s: message %q", name, r.last.Message)
 		}
 	}
 
-	// The agent restarted by its switch waits for it and reports its failure when
-	// the assignment is resent after the reconnect.
-	r = deploy(ctx, root, map[string]string{"systemctl": polls(unit("active", "success", running+" 5"), unit("failed", "exit-code", running+" 5"))}, at(running, 5))
-	check("switch failing after agent restart", r, []string{showLegacy, show, show}, []string{"PHASE_FAILED"})
-	if !strings.Contains(r.last.Message, "exit-code") {
-		t.Errorf("switch failing after agent restart: message %q", r.last.Message)
-	}
-
-	// Resent, a switch that failed before activation is reported, not retried.
-	r = deploy(ctx, root, map[string]string{"systemctl": polls(unit("failed", "exit-code", next+" 5"))}, at(next, 5))
-	check("switch failed before activation, resent", r, []string{showLegacy, show}, []string{"PHASE_FAILED"})
-
-	// Assigned again, or by a server not sending revisions, a failed switch is retried.
-	for _, revisions := range [][2]int{{5, 6}, {0, 0}} {
-		recorded, assigned := revisions[0], revisions[1]
-		r = deploy(ctx, root, map[string]string{"systemctl": polls(unit("failed", "exit-code", running+" "+strconv.Itoa(recorded)))}, at(running, int64(assigned)))
-		check(fmt.Sprintf("retry of revision %d as %d", recorded, assigned), r,
-			[]string{showLegacy, show, realise(running), setProfile(running), resetFailed, switchTo(running, assigned)}, switched)
-	}
-	record := filepath.Join(root, "run/fleet-agent-switch.failed")
-	if _, err := os.Stat(record); !os.IsNotExist(err) {
-		t.Errorf("failure record left after the retry: %v", err)
-	}
-
-	// Stopped once the retry reset the unit, the agent keeps the failure in a record.
-	stopped, stop = context.WithCancel(ctx)
-	defer stop()
-	stopAt, stopAgent = "systemd-run", stop
-	r = deploy(stopped, root, map[string]string{"systemctl": polls(unit("failed", "exit-code", running+" 5"))}, at(running, 6))
-	stopAt = ""
-	if data, err := os.ReadFile(record); err != nil || string(data) != running+" 5 exit-code" {
-		t.Fatalf("failure record %q: %v", data, err)
-	}
-	// Restarted, it reports the recorded failure when resent and retries when assigned again.
-	r = deploy(ctx, root, nil, at(running, 5))
-	check("recorded failure resent", r, []string{showLegacy, show}, []string{"PHASE_FAILED"})
-	r = deploy(ctx, root, nil, at(running, 6))
-	check("recorded failure assigned again", r, []string{showLegacy, show, realise(running), setProfile(running), switchTo(running, 6)}, switched)
-	if _, err := os.Stat(record); !os.IsNotExist(err) {
-		t.Errorf("failure record left after the retry: %v", err)
-	}
-
 	// The result of a switch in the legacy unit is lost, so the agent switches again.
+	setRecord("")
 	r = deploy(ctx, root, map[string]string{"legacy": polls(unit("active", "success", "x"), unit("inactive", "success", "x"))}, at(running, 1))
-	check("legacy switch", r, []string{showLegacy, showLegacy, show, realise(running), setProfile(running), switchTo(running, 1)}, switched)
+	check("legacy switch", r, with([]string{showLegacy, showLegacy, show}, switching(running, 1)), switched, running+" 1 success")
 
 	// The agent restarted by a switch waits for it before reading the active store path.
-	switching := t.TempDir()
+	switchingRoot := t.TempDir()
 	for _, path := range []string{running, next} {
-		if err := os.MkdirAll(filepath.Join(switching, path), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(switchingRoot, path), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(switching, path, "nixos-version"), []byte("26.05"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(switchingRoot, path, "nixos-version"), []byte("26.05"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := os.MkdirAll(filepath.Join(switching, "run"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(switchingRoot, "run"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(running, filepath.Join(switching, "run/current-system")); err != nil {
+	if err := os.Symlink(running, filepath.Join(switchingRoot, "run/current-system")); err != nil {
 		t.Fatal(err)
 	}
 	activated := filepath.Join(t.TempDir(), "activated")
-	r = deploy(ctx, switching, map[string]string{"systemctl": `[ "$1" = show ] || exit 0
-		if [ -e ` + activated + ` ]; then printf '` + unit("inactive", "success", "fleet-agent-switch.service") + `'
-		else touch ` + activated + `; ln -sfn ` + next + ` ` + filepath.Join(switching, "run/current-system") + `
+	r = deploy(ctx, switchingRoot, map[string]string{"systemctl": `[ "$1" = show ] || exit 0
+		if [ -e ` + activated + ` ]; then printf '` + notLoaded + `'
+		else touch ` + activated + `; ln -sfn ` + next + ` ` + filepath.Join(switchingRoot, "run/current-system") + `
 			printf '` + unit("active", "success", next+" 1") + `'; fi`}, at(next, 1))
-	check("switch activating while waiting", r, []string{showLegacy, show, show}, []string{"PHASE_DONE"})
+	if !slices.Equal(r.commands, []string{showLegacy, show, show}) || !slices.Equal(r.phases, []string{"PHASE_DONE"}) {
+		t.Errorf("switch activating while waiting: commands %v, phases %v", r.commands, r.phases)
+	}
 
 	for _, tc := range []struct {
 		name, root, path, message string
