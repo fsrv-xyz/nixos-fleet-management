@@ -41,7 +41,11 @@ func TestDeployer(t *testing.T) {
 	}
 	var stopAt string
 	var stopAgent context.CancelFunc
-	const notLoaded = `printf 'ActiveState=inactive\nResult=success\n'`
+	// unit is the systemctl show output for the switch unit.
+	unit := func(state, result, description string) string {
+		return `ActiveState=` + state + `\nResult=` + result + `\nDescription=` + description + `\n`
+	}
+	notLoaded := `printf '` + unit("inactive", "success", "fleet-agent-switch.service") + `'`
 	// deploy offers paths one after another to the same deployer.
 	deploy := func(ctx context.Context, root string, scripts map[string]string, paths ...string) result {
 		var r result
@@ -70,8 +74,8 @@ func TestDeployer(t *testing.T) {
 	switchPollInterval = time.Millisecond
 	t.Cleanup(func() { switchPollInterval = time.Second })
 	const (
-		show        = "systemctl show --property=ActiveState,Result nixos-rebuild-switch-to-configuration"
-		resetFailed = "systemctl reset-failed nixos-rebuild-switch-to-configuration"
+		show        = "systemctl show --property=ActiveState,Result,Description fleet-agent-switch"
+		resetFailed = "systemctl reset-failed fleet-agent-switch"
 	)
 	realise := func(path string) string { return "nix-store --realise " + path }
 	setProfile := func(path string) string {
@@ -79,24 +83,27 @@ func TestDeployer(t *testing.T) {
 	}
 	switchTo := func(path string) string {
 		return "systemd-run -E LOCALE_ARCHIVE -E NIXOS_INSTALL_BOOTLOADER=0 -E NIXOS_NO_CHECK --no-ask-password --quiet" +
-			" --service-type=exec --unit=nixos-rebuild-switch-to-configuration --wait " + path + "/bin/switch-to-configuration switch"
+			" --service-type=exec --unit=fleet-agent-switch --description=" + path + " --wait " + path + "/bin/switch-to-configuration switch"
 	}
-	// polls answers the n-th systemctl show with the n-th of states, then with the last.
-	polls := func(states ...string) string {
+	// polls answers the n-th systemctl show with the n-th of units, then with the last.
+	polls := func(units ...string) string {
 		counter := filepath.Join(t.TempDir(), "polls")
 		script := `[ "$1" = show ] || exit 0; echo >> ` + counter + `; case $(wc -l < ` + counter + `) in`
-		for i, state := range states {
+		for i, u := range units {
 			pattern := strconv.Itoa(i + 1)
-			if i == len(states)-1 {
+			if i == len(units)-1 {
 				pattern = "*"
 			}
-			script += ` ` + pattern + `) printf 'ActiveState=` + strings.Replace(state, "/", `\nResult=`, 1) + `\n';;`
+			script += ` ` + pattern + `) printf '` + u + `';;`
 		}
 		return script + ` esac`
 	}
+	runningThenFailed := func() string {
+		return polls(unit("active", "success", running), unit("failed", "exit-code", running))
+	}
 
 	r := deploy(ctx, root, map[string]string{"nix-store": "echo copying path 1; echo copying path 2"}, next)
-	if want := []string{realise(next), setProfile(next), show, switchTo(next)}; !slices.Equal(r.commands, want) {
+	if want := []string{show, realise(next), setProfile(next), switchTo(next)}; !slices.Equal(r.commands, want) {
 		t.Errorf("commands:\n%s\nwant:\n%s", strings.Join(r.commands, "\n"), strings.Join(want, "\n"))
 	}
 	if want := []string{"PHASE_REALISING", "PHASE_ACTIVATING", "PHASE_DONE"}; !slices.Equal(r.phases, want) {
@@ -110,18 +117,20 @@ func TestDeployer(t *testing.T) {
 	if want := []string{"PHASE_REALISING", "PHASE_FAILED"}; !slices.Equal(r.phases, want) || !strings.Contains(r.last.Message, "error: cannot substitute") {
 		t.Errorf("failed realise: phases %v, message %q", r.phases, r.last.Message)
 	}
-	if len(r.commands) != 1 {
-		t.Errorf("ran %v after the failed realise", r.commands[1:])
+	if want := []string{show, realise(next)}; !slices.Equal(r.commands, want) {
+		t.Errorf("failed realise: commands %v", r.commands)
 	}
 
+	// The failed unit stays loaded as the record of the failure.
 	r = deploy(ctx, root, map[string]string{"systemd-run": "exit 4"}, next)
-	if want := []string{"PHASE_REALISING", "PHASE_ACTIVATING", "PHASE_FAILED"}; !slices.Equal(r.phases, want) || r.commands[len(r.commands)-1] != resetFailed {
-		t.Errorf("failed switch: phases %v, commands %v", r.phases, r.commands)
+	if want := []string{"PHASE_REALISING", "PHASE_ACTIVATING", "PHASE_FAILED"}; !slices.Equal(r.phases, want) ||
+		r.commands[len(r.commands)-1] != switchTo(next) || !strings.Contains(r.last.Message, "journalctl -u fleet-agent-switch") {
+		t.Errorf("failed switch: phases %v, commands %v, message %q", r.phases, r.commands, r.last.Message)
 	}
 
-	// A switch the agent did not see end is settled before the next one, without blaming it.
-	r = deploy(ctx, root, map[string]string{"systemctl": polls("active/success", "failed/exit-code", "inactive/success")}, next)
-	if want := []string{realise(next), setProfile(next), show, show, resetFailed, switchTo(next)}; !slices.Equal(r.commands, want) {
+	// A switch the agent did not see end is awaited and reset before the next one, without blaming it.
+	r = deploy(ctx, root, map[string]string{"systemctl": runningThenFailed()}, next)
+	if want := []string{show, show, realise(next), setProfile(next), resetFailed, switchTo(next)}; !slices.Equal(r.commands, want) {
 		t.Errorf("previous switch: commands:\n%s\nwant:\n%s", strings.Join(r.commands, "\n"), strings.Join(want, "\n"))
 	}
 	if want := []string{"PHASE_REALISING", "PHASE_ACTIVATING", "PHASE_DONE"}; !slices.Equal(r.phases, want) {
@@ -137,18 +146,23 @@ func TestDeployer(t *testing.T) {
 		t.Errorf("stopped agent: phases %v", r.phases)
 	}
 
-	r = deploy(ctx, root, nil, running)
-	if !slices.Equal(r.commands, []string{show}) || !slices.Equal(r.phases, []string{"PHASE_DONE"}) || r.last.Message != "already active" {
-		t.Errorf("already active: commands %v, phases %v, message %q", r.commands, r.phases, r.last.Message)
+	for name, systemctl := range map[string]string{
+		"no switch recorded":            notLoaded,
+		"failed switch to another path": polls(unit("failed", "exit-code", next)),
+	} {
+		r = deploy(ctx, root, map[string]string{"systemctl": systemctl}, running)
+		if !slices.Equal(r.commands, []string{show}) || !slices.Equal(r.phases, []string{"PHASE_DONE"}) || r.last.Message != "already active" {
+			t.Errorf("already active, %s: commands %v, phases %v, message %q", name, r.commands, r.phases, r.last.Message)
+		}
 	}
 
-	// The agent restarted by its switch finds it still running, sees it fail, and
-	// switches again when offered the same path once more.
-	r = deploy(ctx, root, map[string]string{"systemctl": polls("active/success", "failed/exit-code", "inactive/success")}, running, running)
-	if want := []string{show, show, resetFailed, realise(running), setProfile(running), show, switchTo(running)}; !slices.Equal(r.commands, want) {
+	// The agent restarted by its switch waits for it and switches again, as the
+	// failed switch left the store path active.
+	r = deploy(ctx, root, map[string]string{"systemctl": runningThenFailed()}, running)
+	if want := []string{show, show, realise(running), setProfile(running), resetFailed, switchTo(running)}; !slices.Equal(r.commands, want) {
 		t.Errorf("switch failing after agent restart: commands:\n%s\nwant:\n%s", strings.Join(r.commands, "\n"), strings.Join(want, "\n"))
 	}
-	if want := []string{"PHASE_FAILED", "PHASE_REALISING", "PHASE_ACTIVATING", "PHASE_DONE"}; !slices.Equal(r.phases, want) {
+	if want := []string{"PHASE_REALISING", "PHASE_ACTIVATING", "PHASE_DONE"}; !slices.Equal(r.phases, want) {
 		t.Errorf("switch failing after agent restart: phases %v", r.phases)
 	}
 
