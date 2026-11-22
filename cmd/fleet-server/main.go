@@ -45,7 +45,8 @@ func main() {
 	flag.Usage = func() {
 		fmt.Fprintln(flag.CommandLine.Output(), `usage:
   fleet-server [-config file]                                 serve
-  fleet-server [-config file] ca list | sign <certname>...    manage agent certificates
+  fleet-server [-config file] ca list                         list pending certificate requests
+  fleet-server [-config file] ca sign | reject <certname>...  sign or delete pending requests
   fleet-server [-config file] ca deployer | revoke <name>     issue or revoke a deploy certificate
   fleet-server [-config file] deploy <certname> <store path>  assign a system closure`)
 		flag.PrintDefaults()
@@ -159,9 +160,10 @@ func serve(cfg config) {
 func caCommand(cfg config, args []string) {
 	list := len(args) == 1 && args[0] == "list"
 	sign := len(args) > 1 && args[0] == "sign"
+	reject := len(args) > 1 && args[0] == "reject"
 	deployer := len(args) == 2 && args[0] == "deployer"
 	revoke := len(args) == 2 && args[0] == "revoke"
-	if !list && !sign && !deployer && !revoke {
+	if !list && !sign && !reject && !deployer && !revoke {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -191,6 +193,13 @@ func caCommand(cfg config, args []string) {
 	case revoke:
 		if err := ca.RevokeDeployer(ctx, args[1]); err != nil {
 			log.Fatal(err)
+		}
+	case reject:
+		for _, name := range args[1:] {
+			if err := ca.Reject(ctx, name); err != nil {
+				log.Fatal(err)
+			}
+			fmt.Printf("rejected %s\n", name)
 		}
 	default:
 		for _, name := range args[1:] {

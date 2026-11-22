@@ -455,6 +455,18 @@ func TestCertificateRequestLimits(t *testing.T) {
 	if err := request(node1); err != nil {
 		t.Errorf("pending agent asking again at the limit: %v", err)
 	}
+	if err := ca.Reject(ctx, "node1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ca.Reject(ctx, "node1"); err == nil {
+		t.Error("rejected a request that is no longer pending")
+	}
+	if err := request(rogueCSR(t, "node2")); err != nil {
+		t.Errorf("request after rejecting one at the limit: %v", err)
+	}
+	if err := ca.Reject(ctx, "node2"); err != nil {
+		t.Fatal(err)
+	}
 
 	maxPendingRequests = 5
 	var wg sync.WaitGroup
